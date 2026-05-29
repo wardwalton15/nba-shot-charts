@@ -1,0 +1,6 @@
+nba_api>=1.5.2
+pandas>=2.0
+matplotlib>=3.7
+pyarrow>=14.0
+plotly>=5.18
+requests>=2.28

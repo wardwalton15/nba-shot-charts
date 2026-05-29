@@ -1,0 +1,10 @@
+cache/*.parquet
+cache/*.csv
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.png
+*.html
+.venv/
+venv/
