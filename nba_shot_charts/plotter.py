@@ -1,5 +1,8 @@
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
 import pandas as pd
+from scipy.ndimage import gaussian_filter
 
 from .court import draw_court
 
@@ -111,3 +114,325 @@ def hexbin_shot_chart(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig, ax
+
+
+_EXTENT = (-250, 250, -47.5, 422.5)
+
+
+def _measure_hexbin_grid(x_rs, y_rs, x_po, y_po, gridsize: int):
+    """
+    Run hexbin on both datasets with mincnt=0 on a shared hidden figure.
+    Returns (rs_counts, po_counts) arrays guaranteed to be the same length
+    because the grid is determined solely by extent + gridsize.
+    """
+    fig_tmp, ax_tmp = plt.subplots()
+    hb_rs = ax_tmp.hexbin(x_rs, y_rs, gridsize=gridsize, extent=_EXTENT, mincnt=0)
+    rs_counts = hb_rs.get_array().copy()
+    hb_po = ax_tmp.hexbin(x_po, y_po, gridsize=gridsize, extent=_EXTENT, mincnt=0)
+    po_counts = hb_po.get_array().copy()
+    plt.close(fig_tmp)
+    assert len(rs_counts) == len(po_counts), "Hexbin grid mismatch — same gridsize/extent required"
+    return rs_counts, po_counts
+
+
+def _measure_hexbin_pts(x_rs, y_rs, pts_rs, x_po, y_po, pts_po, gridsize: int):
+    """
+    Run four hexbin passes to get pts_sum and count per bin for RS and PO.
+    Returns (rs_pts_sum, rs_count, po_pts_sum, po_count).
+    """
+    fig_tmp, ax_tmp = plt.subplots()
+    hb_rs_pts = ax_tmp.hexbin(x_rs, y_rs, C=pts_rs, reduce_C_function=np.sum,
+                               gridsize=gridsize, extent=_EXTENT, mincnt=0)
+    hb_rs_cnt = ax_tmp.hexbin(x_rs, y_rs, gridsize=gridsize, extent=_EXTENT, mincnt=0)
+    hb_po_pts = ax_tmp.hexbin(x_po, y_po, C=pts_po, reduce_C_function=np.sum,
+                               gridsize=gridsize, extent=_EXTENT, mincnt=0)
+    hb_po_cnt = ax_tmp.hexbin(x_po, y_po, gridsize=gridsize, extent=_EXTENT, mincnt=0)
+    rs_pts_sum = hb_rs_pts.get_array().copy()
+    rs_count = hb_rs_cnt.get_array().copy()
+    po_pts_sum = hb_po_pts.get_array().copy()
+    po_count = hb_po_cnt.get_array().copy()
+    plt.close(fig_tmp)
+    return rs_pts_sum, rs_count, po_pts_sum, po_count
+
+
+def _apply_diff_to_hexbin(ax, x_po, y_po, diff: np.ndarray, gridsize: int,
+                           cmap_name: str, alpha: float):
+    """Draw a hexbin on ax with the precomputed diff array applied."""
+    cmap = plt.get_cmap(cmap_name).copy()
+    cmap.set_bad(alpha=0.0)
+    hb = ax.hexbin(x_po, y_po, gridsize=gridsize, extent=_EXTENT, mincnt=0,
+                   cmap=cmap, alpha=alpha, zorder=3)
+    hb.set_array(diff)
+    return hb
+
+
+def freq_diff_chart(
+    df_rs: pd.DataFrame,
+    df_po: pd.DataFrame,
+    title: str,
+    gridsize: int = 20,
+    fig_size: tuple = (12, 9),
+    min_count: int = 5,
+    cmap: str = "RdBu_r",
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Hexbin chart showing shot frequency differential: Playoffs minus Regular Season.
+
+    Positive (red) = team shoots from there MORE in the playoffs.
+    Negative (blue) = team shoots from there LESS in the playoffs.
+    Bins with fewer than min_count combined shots are masked transparent.
+    """
+    x_rs, y_rs = df_rs["LOC_X"].to_numpy(), df_rs["LOC_Y"].to_numpy()
+    x_po, y_po = df_po["LOC_X"].to_numpy(), df_po["LOC_Y"].to_numpy()
+    n_rs, n_po = len(df_rs), len(df_po)
+
+    rs_counts, po_counts = _measure_hexbin_grid(x_rs, y_rs, x_po, y_po, gridsize)
+
+    rs_freq = rs_counts / rs_counts.sum()
+    po_freq = po_counts / po_counts.sum()
+    diff = (po_freq - rs_freq).astype(float)
+    diff[rs_counts + po_counts < min_count] = np.nan
+
+    abs_max = np.nanmax(np.abs(diff))
+
+    fig, ax = plt.subplots(figsize=fig_size)
+    ax.set_facecolor("#f8f8f8")
+    draw_court(ax, color="#cccccc")
+
+    hb = _apply_diff_to_hexbin(ax, x_po, y_po, diff, gridsize, cmap, alpha=0.85)
+    hb.set_clim(-abs_max, abs_max)
+
+    cb = plt.colorbar(hb, ax=ax, label="Shot frequency\n(Playoffs − Reg. Season)",
+                      shrink=0.55, pad=0.02)
+    cb.ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.1%}"))
+
+    ax.set_title(
+        f"{title}\nPlayoffs: {n_po} FGA  •  Regular Season: {n_rs} FGA",
+        fontsize=13, fontweight="bold", pad=12,
+    )
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
+    return fig, ax
+
+
+def efficiency_diff_chart(
+    df_rs: pd.DataFrame,
+    df_po: pd.DataFrame,
+    title: str,
+    gridsize: int = 20,
+    fig_size: tuple = (12, 9),
+    min_count: int = 5,
+    cmap: str = "RdBu_r",
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Hexbin chart showing shot efficiency differential: Playoffs minus Regular Season.
+
+    Efficiency = pts per shot attempt (0, 2, or 3 per shot).
+    Positive (red) = more efficient in playoffs. Negative (blue) = less efficient.
+    Bins with fewer than min_count combined shots are masked transparent.
+    """
+    def _add_pts(df):
+        df = df.copy()
+        df["_pts"] = df["SHOT_MADE_FLAG"] * df["SHOT_TYPE"].str.contains("3PT").map({True: 3, False: 2})
+        return df
+
+    df_rs = _add_pts(df_rs)
+    df_po = _add_pts(df_po)
+
+    x_rs = df_rs["LOC_X"].to_numpy()
+    y_rs = df_rs["LOC_Y"].to_numpy()
+    pts_rs = df_rs["_pts"].to_numpy().astype(float)
+    x_po = df_po["LOC_X"].to_numpy()
+    y_po = df_po["LOC_Y"].to_numpy()
+    pts_po = df_po["_pts"].to_numpy().astype(float)
+    n_rs, n_po = len(df_rs), len(df_po)
+
+    rs_pts_sum, rs_count, po_pts_sum, po_count = _measure_hexbin_pts(
+        x_rs, y_rs, pts_rs, x_po, y_po, pts_po, gridsize
+    )
+
+    rs_eff = np.where(rs_count > 0, rs_pts_sum / rs_count, np.nan)
+    po_eff = np.where(po_count > 0, po_pts_sum / po_count, np.nan)
+    diff = (po_eff - rs_eff).astype(float)
+    diff[rs_count + po_count < min_count] = np.nan
+
+    # Symmetric clim at 95th percentile of abs values to avoid outlier distortion
+    abs_vals = np.abs(diff[np.isfinite(diff)])
+    abs_max = float(np.percentile(abs_vals, 95)) if len(abs_vals) else 1.0
+
+    fig, ax = plt.subplots(figsize=fig_size)
+    ax.set_facecolor("#f8f8f8")
+    draw_court(ax, color="#cccccc")
+
+    hb = _apply_diff_to_hexbin(ax, x_po, y_po, diff, gridsize, cmap, alpha=0.85)
+    hb.set_clim(-abs_max, abs_max)
+
+    cb = plt.colorbar(hb, ax=ax, label="Pts per shot attempt\n(Playoffs − Reg. Season)",
+                      shrink=0.55, pad=0.02)
+    cb.ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.2f}"))
+
+    ax.set_title(
+        f"{title}\nPlayoffs: {n_po} FGA  •  Regular Season: {n_rs} FGA",
+        fontsize=13, fontweight="bold", pad=12,
+    )
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
+    return fig, ax
+
+
+# ── Smooth heatmap variants ───────────────────────────────────────────────────
+
+_GRID_BINS = 200   # histogram resolution before smoothing
+# Each bin = 500 units / 200 = 2.5 units = 0.25 ft.
+# sigma=10 → ~2.5 ft blur radius, giving smooth zone-level blobs.
+_SIGMA = 10.0
+_X_EDGES = np.linspace(-250, 250, _GRID_BINS + 1)
+_Y_EDGES = np.linspace(-47.5, 422.5, _GRID_BINS + 1)
+_X_CENTERS = (_X_EDGES[:-1] + _X_EDGES[1:]) / 2
+_Y_CENTERS = (_Y_EDGES[:-1] + _Y_EDGES[1:]) / 2
+
+
+def _hist2d(x, y, weights=None):
+    h, _, _ = np.histogram2d(x, y, bins=[_X_EDGES, _Y_EDGES], weights=weights)
+    return h  # shape (X_BINS, Y_BINS)
+
+
+def _smooth_chart_base(diff: np.ndarray, combined_cnt: np.ndarray, title: str,
+                        cb_label: str, cb_fmt: str, n_rs: int, n_po: int,
+                        cmap: str, fig_size: tuple, save_path):
+    """Shared rendering for both smooth chart types."""
+    # NaN-safe: fill before smoothing so gaussian_filter doesn't propagate NaNs.
+    # The count-based mask below will hide regions with no real data.
+    diff_smooth = gaussian_filter(np.nan_to_num(diff, nan=0.0), sigma=_SIGMA)
+
+    # Mask using smoothed combined counts so the visible region follows the blur radius.
+    cnt_smooth = gaussian_filter(combined_cnt, sigma=_SIGMA)
+    diff_plot = np.where(cnt_smooth >= 0.3, diff_smooth, np.nan)
+
+    valid = diff_plot[np.isfinite(diff_plot)]
+    abs_max = float(np.nanpercentile(np.abs(valid), 97)) if len(valid) else 1.0
+
+    fig, ax = plt.subplots(figsize=fig_size)
+    ax.set_facecolor("#f8f8f8")
+
+    cm = plt.get_cmap(cmap).copy()
+    cm.set_bad(alpha=0.0)
+
+    # pcolormesh needs the 2D array transposed: (Y, X) for (rows, cols)
+    pcm = ax.pcolormesh(
+        _X_CENTERS, _Y_CENTERS, diff_plot.T,
+        cmap=cm, vmin=-abs_max, vmax=abs_max,
+        shading="gouraud",   # bilinear interpolation → extra smooth look
+        zorder=2,
+    )
+
+    draw_court(ax, color="#888888", lw=1.5)
+
+    cb = plt.colorbar(pcm, ax=ax, label=cb_label, shrink=0.55, pad=0.02)
+    cb.ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: cb_fmt.format(x=x)))
+
+    ax.set_title(
+        f"{title}\nPlayoffs: {n_po} FGA  •  Regular Season: {n_rs} FGA",
+        fontsize=13, fontweight="bold", pad=12,
+    )
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
+    return fig, ax
+
+
+def smooth_freq_diff_chart(
+    df_rs: pd.DataFrame,
+    df_po: pd.DataFrame,
+    title: str,
+    fig_size: tuple = (12, 9),
+    min_count: int = 5,
+    cmap: str = "RdBu_r",
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Smooth heatmap showing shot frequency differential: Playoffs minus Regular Season.
+
+    Uses a 2D histogram + Gaussian blur instead of discrete hexbins.
+    Positive (red) = more shots in playoffs. Negative (blue) = fewer.
+    """
+    x_rs, y_rs = df_rs["LOC_X"].to_numpy(), df_rs["LOC_Y"].to_numpy()
+    x_po, y_po = df_po["LOC_X"].to_numpy(), df_po["LOC_Y"].to_numpy()
+    n_rs, n_po = len(df_rs), len(df_po)
+
+    rs_hist = _hist2d(x_rs, y_rs)
+    po_hist = _hist2d(x_po, y_po)
+
+    rs_freq = rs_hist / rs_hist.sum()
+    po_freq = po_hist / po_hist.sum()
+    # Scale to "per 1000 shots" so colorbar shows readable numbers (~±1–5 range).
+    diff = (po_freq - rs_freq) * 1000
+
+    return _smooth_chart_base(
+        diff, rs_hist + po_hist, title,
+        cb_label="Extra shots per 1,000 FGA\n(Playoffs − Reg. Season)",
+        cb_fmt="{x:+.2f}",
+        n_rs=n_rs, n_po=n_po,
+        cmap=cmap, fig_size=fig_size, save_path=save_path,
+    )
+
+
+def smooth_efficiency_diff_chart(
+    df_rs: pd.DataFrame,
+    df_po: pd.DataFrame,
+    title: str,
+    fig_size: tuple = (12, 9),
+    min_count: int = 5,
+    cmap: str = "RdBu_r",
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Smooth heatmap showing shot efficiency differential: Playoffs minus Regular Season.
+
+    Efficiency = pts per shot attempt. Gaussian blur applied to pts and count
+    histograms separately before dividing, which preserves spatial structure.
+    Positive (red) = more efficient in playoffs. Negative (blue) = less efficient.
+    """
+    def _add_pts(df):
+        df = df.copy()
+        df["_pts"] = df["SHOT_MADE_FLAG"] * df["SHOT_TYPE"].str.contains("3PT").map({True: 3, False: 2})
+        return df
+
+    df_rs = _add_pts(df_rs)
+    df_po = _add_pts(df_po)
+
+    x_rs, y_rs = df_rs["LOC_X"].to_numpy(), df_rs["LOC_Y"].to_numpy()
+    x_po, y_po = df_po["LOC_X"].to_numpy(), df_po["LOC_Y"].to_numpy()
+    pts_rs = df_rs["_pts"].to_numpy().astype(float)
+    pts_po = df_po["_pts"].to_numpy().astype(float)
+    n_rs, n_po = len(df_rs), len(df_po)
+
+    rs_cnt = _hist2d(x_rs, y_rs)
+    rs_pts = _hist2d(x_rs, y_rs, weights=pts_rs)
+    po_cnt = _hist2d(x_po, y_po)
+    po_pts = _hist2d(x_po, y_po, weights=pts_po)
+
+    # Smooth numerator and denominator separately before dividing
+    rs_eff = np.where(
+        gaussian_filter(rs_cnt, _SIGMA) > 0.1,
+        gaussian_filter(rs_pts, _SIGMA) / gaussian_filter(rs_cnt, _SIGMA),
+        np.nan,
+    )
+    po_eff = np.where(
+        gaussian_filter(po_cnt, _SIGMA) > 0.1,
+        gaussian_filter(po_pts, _SIGMA) / gaussian_filter(po_cnt, _SIGMA),
+        np.nan,
+    )
+    diff = po_eff - rs_eff
+
+    return _smooth_chart_base(
+        diff, rs_cnt + po_cnt, title,
+        cb_label="Pts per shot attempt\n(Playoffs − Reg. Season)",
+        cb_fmt="{x:+.2f}",
+        n_rs=n_rs, n_po=n_po,
+        cmap=cmap, fig_size=fig_size, save_path=save_path,
+    )
