@@ -1,8 +1,10 @@
 import matplotlib.pyplot as plt
 
-from .data.fetcher import get_assist_shots, get_player_id, get_shot_chart, get_team_id, get_team_shot_chart
+from .data.fetcher import (get_assist_shots, get_league_averages, get_player_id, get_shot_chart,
+                           get_team_games, get_team_id, get_team_shot_chart)
 from .plotter import (efficiency_diff_chart, freq_diff_chart, hexbin_shot_chart,
-                      scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart)
+                      scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
+                      three_point_zone_chart)
 
 
 def player_shot_chart(
@@ -162,3 +164,69 @@ def team_comparison_charts(
         plt.show()
 
     return result_freq, result_eff
+
+
+def team_three_point_chart(
+    team_name: str,
+    season: str,
+    season_type: str = "Regular Season",
+    compare_season: str | None = None,
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Three-point shooting chart for a team: every 3PA as a make/miss, with each
+    3PT zone shaded by FG% relative to league average for the same span.
+
+    Args:
+        team_name:       Full name, nickname, or partial match, e.g. "Knicks"
+        season:          NBA season string, e.g. "2026-27"
+        season_type:     "Regular Season" or "Playoffs"
+        compare_season:  Optional prior season whose team 3P% is shown in the subtitle
+        refresh:         Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:       File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    team_id = get_team_id(team_name)
+    df = get_team_shot_chart(team_id, season, season_type, refresh=refresh)
+    if df.empty:
+        raise ValueError(f"No shot data found for '{team_name}' in {season} {season_type}")
+    league_avg = get_league_averages(season, season_type, refresh=refresh)
+    games = get_team_games(team_id, season, season_type, refresh=refresh)
+
+    display_name = df["TEAM_NAME"].iloc[0]
+    threes = df[df["SHOT_TYPE"] == "3PT Field Goal"]
+    fgm, fga = int(threes["SHOT_MADE_FLAG"].sum()), len(threes)
+    lg3 = league_avg[league_avg["SHOT_ZONE_BASIC"].str.contains("3")]
+    lg_pct = lg3["FGM"].sum() / lg3["FGA"].sum() * 100
+
+    wins = int((games["WL"] == "W").sum())
+    losses = int((games["WL"] == "L").sum())
+    n_games = df["GAME_ID"].nunique()
+    span = f"first {n_games} games" if season_type == "Regular Season" else season_type.lower()
+    title = f"{display_name} 3-Point Shooting  |  {season} {span} ({wins}-{losses})"
+
+    subtitle = f"{fgm}/{fga} from three ({fgm / fga * 100:.1f}%)   •   League avg {lg_pct:.1f}%"
+    if compare_season:
+        prev = get_team_shot_chart(team_id, compare_season, season_type)
+        prev3 = prev[prev["SHOT_TYPE"] == "3PT Field Goal"]
+        if not prev3.empty:
+            subtitle += f"   •   {compare_season}: {prev3['SHOT_MADE_FLAG'].mean() * 100:.1f}%"
+
+    game_lines = [
+        f"{g.MATCHUP.split(' ', 1)[1]} {g.WL} {g.FG3M}/{g.FG3A}"
+        for g in games.itertuples()
+    ]
+    by_player = (threes.groupby("PLAYER_NAME")["SHOT_MADE_FLAG"].agg(["sum", "count"])
+                 .sort_values("count", ascending=False).head(7))
+    player_lines = [f"{name.split(' ', 1)[-1]} {int(r['sum'])}/{int(r['count'])}"
+                    for name, r in by_player.iterrows()]
+    footer = "By game:  " + "   ".join(game_lines) + "\nBy player:  " + "   ".join(player_lines)
+
+    fig, ax = three_point_zone_chart(df, league_avg, title, subtitle=subtitle,
+                                     footer=footer, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax

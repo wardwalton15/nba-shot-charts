@@ -1,5 +1,6 @@
 import re
 import time
+import unicodedata
 
 import pandas as pd
 from nba_api.stats.endpoints import (
@@ -7,6 +8,7 @@ from nba_api.stats.endpoints import (
     LeagueGameFinder,
     PlayByPlayV3,
     ShotChartDetail,
+    SynergyPlayTypes,
 )
 from nba_api.stats.static import players, teams
 
@@ -56,10 +58,12 @@ def get_team_shot_chart(
     team_id: int,
     season: str,
     season_type: str,
+    refresh: bool = False,
 ) -> pd.DataFrame:
+    """Set refresh=True for an in-progress season so new games aren't missed."""
     key = f"shots_team_{team_id}_{season}_{season_type.replace(' ', '_')}"
     path = cache_path(key)
-    cached = load_from_cache(path)
+    cached = None if refresh else load_from_cache(path)
     if cached is not None:
         return cached
 
@@ -72,6 +76,56 @@ def get_team_shot_chart(
         context_measure_simple="FGA",
     )
     df = result.get_data_frames()[0]
+    save_to_cache(df, path)
+    return df
+
+
+def get_league_averages(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """League-wide FGA/FGM by shot zone (the LeagueAverages frame of ShotChartDetail)."""
+    key = f"league_avg_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    result = _sleep_and_fetch(
+        ShotChartDetail,
+        player_id=0,
+        team_id=0,
+        season_nullable=season,
+        season_type_all_star=season_type,
+        context_measure_simple="FGA",
+    )
+    df = result.get_data_frames()[1]
+    save_to_cache(df, path)
+    return df
+
+
+def get_team_games(
+    team_id: int,
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """One row per game for the team (GAME_ID, GAME_DATE, MATCHUP, WL, PTS, FG3M, FG3A, ...)."""
+    key = f"games_team_{team_id}_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    result = _sleep_and_fetch(
+        LeagueGameFinder,
+        team_id_nullable=team_id,
+        season_nullable=season,
+        season_type_nullable=season_type,
+        league_id_nullable="00",
+    )
+    df = result.get_data_frames()[0].sort_values("GAME_DATE").reset_index(drop=True)
     save_to_cache(df, path)
     return df
 
@@ -134,10 +188,11 @@ def _get_game_shots(game_id: str) -> pd.DataFrame:
     return df
 
 
-def _get_game_ids(season: str, season_type: str) -> list[str]:
+def _get_game_ids(season: str, season_type: str, refresh: bool = False) -> list[str]:
+    """Set refresh=True for an in-progress season so new games aren't missed."""
     key = f"game_ids_{season}_{season_type.replace(' ', '_')}"
     path = cache_path(key)
-    cached = load_from_cache(path)
+    cached = None if refresh else load_from_cache(path)
     if cached is not None:
         return cached["GAME_ID"].tolist()
 
@@ -234,5 +289,115 @@ def get_assist_shots(
 
     df = all_shots[combined_mask].copy()
     df["ASSIST_PLAYER_ID"] = assisting_player_id
+    save_to_cache(df, path)
+    return df
+
+
+def get_play_type_stats(
+    play_type: str,
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Synergy offensive play-type totals, one row per player.
+
+    play_type is a Synergy key, e.g. "PRBallHandler", "PRRollman", "Isolation".
+    Synergy credits a possession to the player who *finishes* it (shot, shooting
+    foul or turnover) — a P&R where the ballhandler passes out isn't counted here.
+    """
+    key = f"synergy_{play_type}_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    result = _sleep_and_fetch(
+        SynergyPlayTypes,
+        league_id="00",
+        per_mode_simple="Totals",
+        play_type_nullable=play_type,
+        player_or_team_abbreviation="P",
+        season_type_all_star=season_type,
+        season=season,
+        type_grouping_nullable="offensive",
+    )
+    df = result.get_data_frames()[0]
+    save_to_cache(df, path)
+    return df
+
+
+def _fold(name: str) -> str:
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower().strip()
+
+
+def _resolve_assister(name: str, roster: pd.DataFrame) -> int | None:
+    """
+    Match the PBP assist name to a personId on that team's game roster.
+    Handles "Suggs", "Doncic" vs "Dončić", "F. Wagner", and "Jal. Williams".
+    """
+    target = _fold(name)
+    for col in ("playerName", "playerNameI"):
+        hits = roster.loc[roster[col].map(_fold) == target, "personId"].unique()
+        if len(hits) == 1:
+            return int(hits[0])
+
+    # "Jal. Williams": last-name candidates whose first name starts with the prefix
+    prefix, _, last = target.partition(". ")
+    if last:
+        candidates = roster.loc[roster["playerName"].map(_fold) == last, "personId"].unique()
+        hits = []
+        for pid in candidates:
+            info = players.find_player_by_id(int(pid))
+            if info and _fold(info["first_name"]).startswith(prefix):
+                hits.append(int(pid))
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def get_assist_pairs(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    One row per assisted field goal: GAME_ID, TEAM_ID, SCORER_ID, ASSISTER_ID, SHOT_VALUE.
+
+    PlayByPlayV3 only names the assister by last name inside the description
+    ("... (Suggs 2 AST)"), so it's resolved against the players who logged an
+    action for the same team in the same game. Unresolvable rows keep ASSISTER_ID = NA.
+    Set refresh=True for an in-progress season so new games are picked up
+    (per-game PBP stays cached either way).
+    """
+    key = f"assist_pairs_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    ast_pattern = re.compile(r"\(([^()]+?)\s+\d+\s+AST\)")
+    game_ids = _get_game_ids(season, season_type, refresh=refresh)
+    print(f"Scanning {len(game_ids)} games for assists...")
+
+    rows = []
+    for game_id in game_ids:
+        pbp = _get_game_pbp(game_id)
+        players_in_game = pbp.loc[pbp["personId"] > 0, ["teamId", "personId", "playerName", "playerNameI"]]
+        made = pbp[(pbp["shotResult"] == "Made") & pbp["description"].str.contains("AST", na=False)]
+        for _, shot in made.iterrows():
+            m = ast_pattern.search(shot["description"])
+            if not m:
+                continue
+            roster = players_in_game[players_in_game["teamId"] == shot["teamId"]]
+            rows.append({
+                "GAME_ID": game_id,
+                "TEAM_ID": int(shot["teamId"]),
+                "SCORER_ID": int(shot["personId"]),
+                "ASSISTER_ID": _resolve_assister(m.group(1).strip(), roster),
+                "SHOT_VALUE": int(shot["shotValue"]),
+            })
+
+    df = pd.DataFrame(rows).astype({"ASSISTER_ID": "Int64"})
     save_to_cache(df, path)
     return df

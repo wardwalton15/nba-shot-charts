@@ -436,3 +436,128 @@ def smooth_efficiency_diff_chart(
         n_rs=n_rs, n_po=n_po,
         cmap=cmap, fig_size=fig_size, save_path=save_path,
     )
+
+
+# --- Three-point zone chart -------------------------------------------------
+
+# (SHOT_ZONE_BASIC, SHOT_ZONE_AREA, short label, label position)
+_THREE_ZONES = [
+    ("Left Corner 3", "Left Side(L)", "Left corner", (-215, -85)),
+    ("Above the Break 3", "Left Side Center(LC)", "Left wing", (-205, 255)),
+    ("Above the Break 3", "Center(C)", "Top of key", (0, 385)),
+    ("Above the Break 3", "Right Side Center(RC)", "Right wing", (205, 255)),
+    ("Right Corner 3", "Right Side(R)", "Right corner", (215, -85)),
+]
+
+_DIVERGING_3PT = ["#b8302a", "#e8a49b", "#f0efec", "#9dbbe0", "#2a62b0"]
+
+
+def _three_zone_index(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Map court coordinates to an index into _THREE_ZONES (-1 = inside the arc)."""
+    zone = np.full(x.shape, -1)
+    corner = (np.abs(x) >= 220) & (y <= 92.5)
+    above = (np.hypot(x, y) >= 237.5) & ~corner & (y > 0)
+    ang = np.degrees(np.arctan2(y, x))
+    zone[corner & (x < 0)] = 0
+    zone[above & (ang >= 108)] = 1
+    zone[above & (ang >= 72) & (ang < 108)] = 2
+    zone[above & (ang < 72)] = 3
+    zone[corner & (x > 0)] = 4
+    return zone
+
+
+def three_point_zone_chart(
+    df: pd.DataFrame,
+    league_avg: pd.DataFrame,
+    title: str,
+    subtitle: str = "",
+    footer: str = "",
+    max_diff: float = 10.0,
+    fig_size: tuple = (10, 10),
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Three-point shot chart: each 3PT zone is shaded by FG% minus league average
+    (red = below, blue = above), with every attempt plotted as a make or miss.
+
+    Args:
+        df:          Shot chart rows (all shots; 2PT attempts are dropped)
+        league_avg:  LeagueAverages frame from ShotChartDetail
+        max_diff:    Percentage-point difference at which the color saturates
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+
+    threes = df[df["SHOT_TYPE"] == "3PT Field Goal"]
+    lg3 = league_avg.groupby(["SHOT_ZONE_BASIC", "SHOT_ZONE_AREA"])[["FGA", "FGM"]].sum()
+    cmap = LinearSegmentedColormap.from_list("div3", _DIVERGING_3PT)
+
+    # Per-zone team vs. league numbers
+    zone_stats = []
+    for basic, area, _, _ in _THREE_ZONES:
+        z = threes[(threes["SHOT_ZONE_BASIC"] == basic) & (threes["SHOT_ZONE_AREA"] == area)]
+        fgm, fga = int(z["SHOT_MADE_FLAG"].sum()), len(z)
+        lg = lg3.loc[(basic, area)] if (basic, area) in lg3.index else None
+        lg_pct = lg["FGM"] / lg["FGA"] * 100 if lg is not None and lg["FGA"] else np.nan
+        pct = fgm / fga * 100 if fga else np.nan
+        zone_stats.append((fgm, fga, pct, pct - lg_pct))
+
+    fig, ax = plt.subplots(figsize=fig_size)
+
+    # Zone fills: rasterize the court and color each pixel by its zone's differential
+    gx, gy = np.meshgrid(np.linspace(-250, 250, 501), np.linspace(-47.5, 422.5, 471))
+    zidx = _three_zone_index(gx, gy)
+    fill = np.full(gx.shape, np.nan)
+    for i, (_, _, _, diff) in enumerate(zone_stats):
+        fill[zidx == i] = diff
+    ax.imshow(
+        np.ma.masked_invalid(fill), extent=_EXTENT, origin="lower",
+        cmap=cmap, vmin=-max_diff, vmax=max_diff, alpha=0.85, zorder=1,
+    )
+
+    # Surface-colored gaps between zones
+    gap = dict(color="white", lw=3, zorder=2)
+    for side in (-1, 1):
+        ax.plot([side * 220, side * 250], [92.5, 92.5], **gap)
+        for deg in (72, 108):
+            r = np.array([237.5, 470])
+            ax.plot(r * np.cos(np.radians(deg)), r * np.sin(np.radians(deg)), **gap)
+
+    draw_court(ax, color="#555555", lw=1.5)
+    ax.set_ylim(-120, 422.5)
+
+    made = threes[threes["SHOT_MADE_FLAG"] == 1]
+    missed = threes[threes["SHOT_MADE_FLAG"] == 0]
+    ax.scatter(missed["LOC_X"], missed["LOC_Y"], marker="x", s=36, c="#3a3a3a",
+               linewidths=1.4, alpha=0.75, zorder=4, label=f"Missed ({len(missed)})")
+    ax.scatter(made["LOC_X"], made["LOC_Y"], marker="o", s=60, c="#111111",
+               edgecolors="white", linewidths=1.5, zorder=5, label=f"Made ({len(made)})")
+
+    for (_, _, label, (lx, ly)), (fgm, fga, pct, diff) in zip(_THREE_ZONES, zone_stats):
+        if not fga:
+            continue
+        ax.text(
+            lx, ly, f"{label}\n{fgm}/{fga}  {pct:.0f}%\n{diff:+.1f} vs lg",
+            ha="center", va="center", fontsize=9.5, color="#1a1a1a", zorder=6,
+            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="none", alpha=0.9),
+        )
+
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=2,
+              fontsize=9, frameon=False)
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(-max_diff, max_diff))
+    cb = plt.colorbar(sm, ax=ax, shrink=0.5, pad=0.02)
+    cb.set_label("3P% vs. league average (pct. pts)")
+    cb.ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.0f}"))
+
+    ax.set_title(title, fontsize=15, fontweight="bold", pad=28)
+    if subtitle:
+        ax.text(0.5, 1.015, subtitle, transform=ax.transAxes, ha="center",
+                va="bottom", fontsize=10.5, color="#444444")
+    if footer:
+        ax.text(0.5, -0.01, footer, transform=ax.transAxes, ha="center",
+                va="top", fontsize=9.5, color="#444444", linespacing=1.6)
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
+    return fig, ax

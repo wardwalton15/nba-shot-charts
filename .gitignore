@@ -8,3 +8,5 @@ __pycache__/
 *.html
 .venv/
 venv/
+cache/images/
+r/data/

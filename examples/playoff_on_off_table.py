@@ -25,6 +25,19 @@ _DISPLAY_COLS = [
     "MIN_ON", "NET_ON", "NET_OFF", "NET_DIFF",
 ]
 _HEADERS = ["#", "Player", "Team", "GP", "MIN (On)", "Net Rtg (On)", "Net Rtg (Off)", "Net Diff"]
+_HTML_HEADERS = ["#", "PLAYER", "TEAM", "GP", "MIN ON", "ON NET RTG", "OFF NET RTG", "NET DIFF"]
+
+# Subtle team-tinted row backgrounds
+_TEAM_PALETTE = {
+    "ATL": "#FDF3F3", "BOS": "#F2FAF3", "BKN": "#F5F5F5", "CHA": "#EFF7FD",
+    "CHI": "#FDF0F2", "CLE": "#FDF5ED", "DAL": "#EFF7FD", "DEN": "#FDFAF0",
+    "DET": "#FDF0F2", "GSW": "#FDFAF0", "HOU": "#FDF0F2", "IND": "#FDF5ED",
+    "LAC": "#FDF0F2", "LAL": "#FAF3FD", "MEM": "#EFF7FD", "MIA": "#FDF0F2",
+    "MIL": "#F2FAF3", "MIN": "#EFF7FD", "NOP": "#F3F4FD", "NYK": "#FDF5ED",
+    "OKC": "#EEF5FF", "ORL": "#EFF7FD", "PHI": "#EFF7FD", "PHX": "#FDF5ED",
+    "POR": "#FDF0F2", "SAC": "#FAF3FD", "SAS": "#F4F4F6", "TOR": "#FDF0F2",
+    "UTA": "#EFF7FD", "WAS": "#FDF0F2",
+}
 
 
 def resolve_team_id(abbr: str) -> int:
@@ -150,46 +163,109 @@ def save_csv(df: pd.DataFrame, path: str) -> None:
     print(f"Saved CSV → {path}")
 
 
-def save_html(df: pd.DataFrame, path: str, title_label: str = "Playoffs", min_minutes: int = 100) -> None:
-    diff_vals = df["NET_DIFF"].tolist()
-    diff_colors = [
-        "rgba(0,160,0,0.20)" if v > 0 else "rgba(200,0,0,0.20)"
-        for v in diff_vals
-    ]
+def _fmt_name(name: str) -> str:
+    """'Last, First' → 'First Last'"""
+    if ", " in name:
+        last, first = name.split(", ", 1)
+        return f"{first} {last}"
+    return name
 
-    net_diff_str = df["NET_DIFF"].apply(lambda x: f"+{x:.1f}" if x >= 0 else f"{x:.1f}").tolist()
-    col_data = [df[c] for c in _DISPLAY_COLS[:-1]] + [net_diff_str]
+
+def save_html(
+    df: pd.DataFrame,
+    path: str,
+    title_label: str = "Playoffs",
+    min_minutes: int = 100,
+    season_type: str = "Playoffs",
+) -> None:
+    n = len(df)
+    teams = df["TEAM_ABBREVIATION"].tolist()
+    diff_vals = df["NET_DIFF"].tolist()
+
+    base_colors  = [_TEAM_PALETTE.get(t, "#F8F9FA") for t in teams]
+    rank_colors  = ["#EDEDF0"] * n
+    diff_bg      = ["#C6F6D5" if v > 0 else "#FED7D7" for v in diff_vals]
+    diff_fg      = ["#1A5C35" if v > 0 else "#8B1515" for v in diff_vals]
+    default_fg   = ["#111827"] * n
+
+    player_names = [_fmt_name(name) for name in df["VS_PLAYER_NAME"]]
+    net_diff_str = [f"<b>{'+' if x >= 0 else ''}{x:.1f}</b>" for x in diff_vals]
+
+    col_data    = [df["RANK"], player_names, df["TEAM_ABBREVIATION"], df["GP"],
+                   df["MIN_ON"], df["NET_ON"], df["NET_OFF"], net_diff_str]
     col_formats = [None, None, None, None, ".0f", ".1f", ".1f", None]
-    col_align = ["center", "left", "center", "center", "center", "center", "center", "center"]
-    fill_colors = [["#f8f8f8"] * len(df)] * 7 + [diff_colors]
+    col_align   = ["center", "left", "center", "center", "center", "center", "center", "center"]
+    fill_colors = [rank_colors, base_colors, base_colors, base_colors,
+                   base_colors, base_colors, base_colors, diff_bg]
+    font_colors = [["#888"] * n, default_fg, default_fg, default_fg,
+                   default_fg, default_fg, default_fg, diff_fg]
+
+    subtitle = f"Net Rating On/Off Differential  ·  2025-26 {season_type}  ·  Min. {min_minutes} on-court minutes"
 
     fig = go.Figure(data=[go.Table(
-        columnwidth=[30, 160, 50, 30, 60, 80, 80, 80],
+        columnwidth=[28, 170, 44, 28, 58, 82, 82, 72],
         header=dict(
-            values=_HEADERS,
-            fill_color="#1a1a2e",
-            font=dict(color="white", size=12),
-            align="center",
-            height=36,
+            values=[f"<b>{h}</b>" for h in _HTML_HEADERS],
+            fill_color="#0D1B2A",
+            font=dict(color="white", size=11, family="Helvetica Neue, Arial, sans-serif"),
+            align=["center", "left", "center", "center", "center", "center", "center", "center"],
+            height=38,
+            line=dict(color="#0D1B2A", width=0),
         ),
         cells=dict(
             values=col_data,
             fill_color=fill_colors,
             format=col_formats,
             align=col_align,
-            font=dict(size=12),
-            height=32,
+            font=dict(size=12, family="Helvetica Neue, Arial, sans-serif", color=font_colors),
+            height=30,
+            line=dict(color="#E2E8F0", width=0.5),
         ),
     )])
+
     fig.update_layout(
         title=dict(
-            text=f"{title_label} — Net Rating On/Off Differential (min. {min_minutes} on-court minutes)",
-            font=dict(size=16),
+            text=f"<b>{title_label}</b><br><sup><span style='color:#64748B'>{subtitle}</span></sup>",
+            font=dict(size=22, color="#0D1B2A", family="Helvetica Neue, Arial, sans-serif"),
+            x=0.5,
+            xanchor="center",
+            y=0.97,
+            yanchor="top",
         ),
-        margin=dict(l=20, r=20, t=60, b=20),
-        height=80 + 32 * len(df),
+        margin=dict(l=24, r=24, t=80, b=36),
+        paper_bgcolor="white",
+        width=920,
+        height=38 + 30 * n + 80 + 36,  # exact fit — no Plotly internal scroll
     )
-    fig.write_html(path)
+    fig.add_annotation(
+        text="Source: NBA Stats API",
+        xref="paper", yref="paper",
+        x=1.0, y=-0.03,
+        showarrow=False,
+        font=dict(size=10, color="#94A3B8", family="Helvetica Neue, Arial, sans-serif"),
+        xanchor="right",
+    )
+
+    # Scale the figure to fit the viewport height if needed — no page scroll, no clipping
+    figure_h = 38 + 30 * n + 80 + 36
+    post_script = f"""
+(function() {{
+  document.body.style.margin = '0';
+  document.body.style.background = 'white';
+  var fig = document.querySelector('.plotly-graph-div');
+  var avail = window.innerHeight - 8;
+  var need = {figure_h};
+  if (need > avail) {{
+    var s = avail / need;
+    fig.style.transform = 'scale(' + s + ')';
+    fig.style.transformOrigin = 'top left';
+    fig.style.marginBottom = '-' + Math.ceil(need * (1 - s)) + 'px';
+  }}
+  document.body.style.overflow = 'hidden';
+}})();
+"""
+
+    fig.write_html(path, include_plotlyjs="cdn", post_script=post_script)
     print(f"Saved HTML → {path}")
 
 
@@ -237,7 +313,7 @@ def main() -> None:
         save_csv(df, args.csv)
 
     if not args.no_html:
-        save_html(df, html_path, title_label, min_minutes)
+        save_html(df, html_path, title_label, min_minutes, args.season_type)
 
 
 if __name__ == "__main__":
