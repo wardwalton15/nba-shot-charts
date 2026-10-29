@@ -1,10 +1,13 @@
+import datetime
+
 import matplotlib.pyplot as plt
 
 from .data.fetcher import (get_assist_shots, get_league_averages, get_player_id, get_shot_chart,
-                           get_team_games, get_team_id, get_team_shot_chart)
+                           get_team_games, get_team_id, get_team_logo, get_team_ratings,
+                           get_team_shot_chart)
 from .plotter import (efficiency_diff_chart, freq_diff_chart, hexbin_shot_chart,
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
-                      three_point_zone_chart)
+                      team_tiers_chart, three_point_zone_chart)
 
 
 def player_shot_chart(
@@ -227,6 +230,49 @@ def team_three_point_chart(
 
     fig, ax = three_point_zone_chart(df, league_avg, title, subtitle=subtitle,
                                      footer=footer, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def team_ratings_chart(
+    season: str,
+    season_type: str = "Regular Season",
+    as_of: datetime.date | None = None,
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    League-wide tiers chart: every team's offensive vs. defensive rating, with
+    diagonal bands grouping teams by net rating.
+
+    Args:
+        season:      NBA season string, e.g. "2026-27"
+        season_type: "Regular Season" or "Playoffs"
+        as_of:       Date for the "ENTERING ..." banner; defaults to today
+        credit:      Byline in the bottom-right corner
+        refresh:     Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:   File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    df = get_team_ratings(season, season_type, refresh=refresh)
+    logos = {abbr: get_team_logo(abbr) for abbr in df["abbreviation"]}
+
+    # Possession-weighted, so it's the true league points per 100
+    league_avg = (df["OFF_RATING"] * df["POSS"]).sum() / df["POSS"].sum()
+
+    as_of = as_of or datetime.date.today()
+    tag = f"ENTERING {as_of.strftime('%b').upper()} {as_of.day}"
+    gp_lo, gp_hi = int(df["GP"].min()), int(df["GP"].max())
+    games = f"{gp_lo}" if gp_lo == gp_hi else f"{gp_lo}–{gp_hi}"
+    note = (f"Points scored / allowed per 100 possessions, {season} {season_type.lower()}"
+            f" ({games} games per team).\nNet rating = offensive rating − defensive rating.")
+
+    fig, ax = team_tiers_chart(df, logos, league_avg, tag, note=note, credit=credit,
+                               save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax

@@ -2,9 +2,12 @@ import re
 import time
 import unicodedata
 
+import numpy as np
 import pandas as pd
+import requests
 from nba_api.stats.endpoints import (
     CommonPlayerInfo,
+    LeagueDashTeamStats,
     LeagueGameFinder,
     PlayByPlayV3,
     ShotChartDetail,
@@ -12,7 +15,7 @@ from nba_api.stats.endpoints import (
 )
 from nba_api.stats.static import players, teams
 
-from .cache import cache_path, load_from_cache, save_to_cache
+from .cache import IMG_DIR, cache_path, load_from_cache, save_to_cache
 
 _SLEEP = 0.6  # seconds between live API calls
 
@@ -401,3 +404,52 @@ def get_assist_pairs(
     df = pd.DataFrame(rows).astype({"ASSISTER_ID": "Int64"})
     save_to_cache(df, path)
     return df
+
+
+def get_team_ratings(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Advanced team stats, one row per team (OFF_RATING, DEF_RATING, NET_RATING, POSS, ...)."""
+    key = f"team_ratings_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    result = _sleep_and_fetch(
+        LeagueDashTeamStats,
+        season=season,
+        season_type_all_star=season_type,
+        measure_type_detailed_defense="Advanced",
+    )
+    df = result.get_data_frames()[0]
+    df = df.merge(pd.DataFrame(teams.get_teams())[["id", "abbreviation"]],
+                  left_on="TEAM_ID", right_on="id").drop(columns="id")
+    save_to_cache(df, path)
+    return df
+
+
+# ESPN's logo slugs where they differ from the NBA abbreviation
+_ESPN_ABBR = {"GSW": "gs", "NYK": "ny", "NOP": "no", "SAS": "sa", "UTA": "utah", "WAS": "wsh"}
+
+
+def get_team_logo(abbreviation: str) -> np.ndarray:
+    """
+    Team logo as an RGBA array, trimmed to its visible pixels.
+
+    Uses ESPN's 500px PNGs — the NBA CDN only serves SVG, which matplotlib can't draw.
+    """
+    from PIL import Image
+
+    slug = _ESPN_ABBR.get(abbreviation, abbreviation.lower())
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+    path = IMG_DIR / f"espn_logo_{slug}.png"
+    if not path.exists():
+        resp = requests.get(f"https://a.espncdn.com/i/teamlogos/nba/500/{slug}.png", timeout=20)
+        resp.raise_for_status()
+        path.write_bytes(resp.content)
+
+    img = Image.open(path).convert("RGBA")
+    return np.asarray(img.crop(img.getbbox()))

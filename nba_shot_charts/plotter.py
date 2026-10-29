@@ -561,3 +561,157 @@ def three_point_zone_chart(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
     return fig, ax
+
+
+# Net-rating tiers, best first: (label, lower bound, fill, text color)
+_TIERS = [
+    ("ELITE", 10, "#cfe3d8", "#2e6b52"),
+    ("STRONG", 4, "#e1e8d3", "#5b6b3a"),
+    ("MIDDLE", -4, "#e8e4dc", "#666666"),
+    ("SHAKY", -10, "#f0e3cf", "#8a6236"),
+    ("STRUGGLING", -np.inf, "#eed8d4", "#9a4a48"),
+]
+_TIER_BG = "#f6f2ea"
+_TIER_INK = "#222222"
+_TIER_ACCENT = "#2e7656"
+
+
+def _spread_points(pts: np.ndarray, min_dist: float, bounds: tuple, iters: int = 400) -> np.ndarray:
+    """Nudge overlapping points apart while pulling each gently back to its anchor."""
+    pos = pts.astype(float).copy()
+    lo, hi = bounds
+    for _ in range(iters):
+        delta = pos[:, None, :] - pos[None, :, :]
+        dist = np.hypot(delta[..., 0], delta[..., 1])
+        np.fill_diagonal(dist, np.inf)
+        overlap = np.clip(min_dist - dist, 0, None)
+        if not overlap.any():
+            break
+        push = (delta / np.where(dist == 0, 1e-6, dist)[..., None]) * overlap[..., None] / 2
+        pos += push.sum(axis=1) + 0.02 * (pts - pos)
+        pos = np.clip(pos, lo + min_dist / 2, hi - min_dist / 2)
+    return pos
+
+
+def team_tiers_chart(
+    df: pd.DataFrame,
+    logos: dict,
+    league_avg: float,
+    tag: str,
+    note: str = "",
+    credit: str = "",
+    fig_size: tuple = (9, 16),
+    logo_in: float = 0.5,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Portrait offense-vs-defense scatter: ORtg on x, DRtg on y (inverted, so better
+    defense is up), team logos as markers, diagonal bands shading net-rating tiers.
+
+    Args:
+        df:          Rows with abbreviation, OFF_RATING, DEF_RATING
+        logos:       abbreviation -> RGBA array
+        league_avg:  League points per 100 possessions; the axes center on it
+        tag:         Text for the banner above the title, e.g. "ENTERING OCT 28"
+        logo_in:     Logo size in inches
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.patches import Rectangle
+
+    plt.rcParams["font.family"] = ["Arial", "DejaVu Sans"]  # DejaVu covers the ↗
+    fig = plt.figure(figsize=fig_size, facecolor=_TIER_BG)
+
+    # Header
+    fig.patches.append(Rectangle((0.06, 0.915), 0.29, 0.03, transform=fig.transFigure,
+                                 fc=_TIER_ACCENT, ec="none"))
+    fig.text(0.205, 0.93, tag, ha="center", va="center", fontsize=15,
+             fontweight="bold", color="white")
+    fig.text(0.06, 0.855, "NBA TEAM TIERS", ha="left", va="center", fontsize=46,
+             fontweight="bold", color=_TIER_INK)
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.805, 0.805], color="#cfc8ba", lw=1))
+    fig.text(0.065, 0.779, "RATING / 100 POSS.", ha="left", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_INK)
+    fig.text(0.935, 0.779, "BETTER TEAMS  ↗", ha="right", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_ACCENT)
+
+    # Square plot centered on league average, wide enough for every team
+    devs = np.r_[df["OFF_RATING"] - league_avg, df["DEF_RATING"] - league_avg]
+    half = np.ceil(np.abs(devs).max()) + 2.5
+    lo, hi = league_avg - half, league_avg + half
+
+    ax = fig.add_axes([0.13, 0.31, 0.8, 0.45])
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(hi, lo)  # lower DRtg is better, so it goes on top
+    ax.set_aspect("equal")
+    ax.set_facecolor(_TIER_BG)
+
+    # Tier bands: net = ORtg - DRtg, so each boundary is the line DRtg = ORtg - bound
+    xs = np.array([lo - 50, hi + 50])
+    bounds = [np.inf] + [t[1] for t in _TIERS]
+    for (_, floor, fill, _), ceiling in zip(_TIERS, bounds):
+        ax.fill_between(xs, xs - np.clip(ceiling, -100, 100), xs - np.clip(floor, -100, 100),
+                        color=fill, lw=0, zorder=0)
+        if np.isfinite(floor):
+            ax.plot(xs, xs - floor, color="#c9c2b4", lw=0.8, zorder=1)
+
+    ax.axvline(league_avg, color="#9a9488", lw=1, ls=(0, (4, 4)), zorder=1)
+    ax.axhline(league_avg, color="#9a9488", lw=1, ls=(0, (4, 4)), zorder=1)
+    ax.text(league_avg + 0.3, hi - 0.4, f"LG AVG {league_avg:.1f}", ha="left", va="bottom",
+            fontsize=9, color="#7d776c")
+
+    # Logos, nudged apart where they collide, with a leader line back to the true spot
+    units_per_in = (hi - lo) / (0.8 * fig_size[0])
+    size = logo_in * units_per_in
+    anchors = df[["OFF_RATING", "DEF_RATING"]].to_numpy()
+    placed = _spread_points(anchors, size * 1.08, (lo, hi))
+    for abbr, (ax0, ay0), (px, py) in zip(df["abbreviation"], anchors, placed):
+        if np.hypot(px - ax0, py - ay0) > size * 0.15:
+            ax.plot([ax0, px], [ay0, py], color="#77716a", lw=1, zorder=2)
+            ax.scatter([ax0], [ay0], s=14, color="#77716a", zorder=2, lw=0)
+        img = logos[abbr]
+        zoom = logo_in * 72 / max(img.shape[:2])
+        ax.add_artist(AnnotationBbox(OffsetImage(img, zoom=zoom), (px, py),
+                                     frameon=False, zorder=3))
+
+    ticks = np.arange(np.ceil(lo / 5) * 5, hi, 5)
+    ax.set_xticks(ticks)
+    ax.set_yticks(ticks)
+    ax.tick_params(length=0, labelsize=12, labelcolor="#6b665d", pad=8)
+    for spine in ax.spines.values():
+        spine.set_color("#cfc8ba")
+    ax.set_xlabel("OFFENSIVE RATING  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+    ax.set_ylabel("DEFENSIVE RATING  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+
+    # Tier legend
+    fig.text(0.065, 0.237, "TIERS BY NET RATING", ha="left", va="center", fontsize=14,
+             fontweight="bold", color=_TIER_INK)
+    box_w, gap = 0.162, 0.0125
+    for i, ((label, floor, fill, ink), ceiling) in enumerate(zip(_TIERS, bounds)):
+        x0 = 0.062 + i * (box_w + gap)
+        fig.patches.append(Rectangle((x0, 0.192), box_w, 0.026, transform=fig.transFigure,
+                                     fc=fill, ec="none"))
+        fig.text(x0 + box_w / 2, 0.205, label, ha="center", va="center", fontsize=12,
+                 fontweight="bold", color=ink)
+        if not np.isfinite(ceiling):
+            rng = f"≥ +{floor}"
+        elif not np.isfinite(floor):
+            rng = f"< −{abs(ceiling)}"
+        else:
+            rng = f"{floor:+d} to {ceiling:+d}".replace("-", "−")
+        fig.text(x0 + box_w / 2, 0.175, rng, ha="center", va="center", fontsize=11,
+                 color="#6b665d")
+
+    if note:
+        fig.text(0.065, 0.135, note, ha="left", va="center", fontsize=10.5,
+                 color="#6b665d", linespacing=1.5)
+    fig.text(0.065, 0.095, "SOURCE: NBA.COM/STATS", ha="left", va="center", fontsize=12,
+             fontweight="bold", color="#77716a")
+    if credit:
+        fig.text(0.935, 0.095, credit, ha="right", va="center", fontsize=12,
+                 fontweight="bold", color="#77716a")
+
+    if save_path:
+        fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
+    return fig, ax

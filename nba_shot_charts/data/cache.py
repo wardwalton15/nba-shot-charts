@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 _CACHE_DIR = Path(__file__).parent.parent.parent / "cache"
+IMG_DIR = _CACHE_DIR / "images"
 
 
 def cache_path(key: str) -> Path:
