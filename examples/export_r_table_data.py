@@ -2,6 +2,7 @@
 Export data for the R/gt tables in r/:
   - r/data/pnr_ballhandler_<season>.csv   Synergy P&R ballhandler totals per player
   - r/data/assist_pairs_<season>.csv      assister -> scorer counts
+  - r/data/on_off_<season>.csv            team net rating with each player on / off court
 
 Run from repo root (refreshes the in-progress season):
     .venv/bin/python examples/export_r_table_data.py
@@ -15,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nba_api.stats.endpoints import LeagueDashPlayerStats
 
-from nba_shot_charts.data.fetcher import _sleep_and_fetch, get_assist_pairs, get_play_type_stats
+from nba_shot_charts.data.fetcher import (
+    _sleep_and_fetch, get_assist_pairs, get_play_type_stats, get_player_on_off,
+)
 
 OUT_DIR = Path(__file__).parent.parent / "r" / "data"
 
@@ -65,6 +68,11 @@ def main():
     pairs_path = OUT_DIR / f"assist_pairs_{args.season}.csv"
     agg.sort_values("AST", ascending=False).to_csv(pairs_path, index=False)
     print(f"Wrote {pairs_path} ({len(agg)} duos)")
+
+    on_off = get_player_on_off(args.season, args.season_type, refresh=refresh)
+    on_off_path = OUT_DIR / f"on_off_{args.season}.csv"
+    on_off.sort_values("NET_DIFF", ascending=False).to_csv(on_off_path, index=False)
+    print(f"Wrote {on_off_path} ({len(on_off)} player-team rows)")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from nba_api.stats.endpoints import (
     PlayByPlayV3,
     ShotChartDetail,
     SynergyPlayTypes,
+    TeamPlayerOnOffSummary,
 )
 from nba_api.stats.static import players, teams
 
@@ -427,6 +428,48 @@ def get_team_ratings(
     df = result.get_data_frames()[0]
     df = df.merge(pd.DataFrame(teams.get_teams())[["id", "abbreviation"]],
                   left_on="TEAM_ID", right_on="id").drop(columns="id")
+    save_to_cache(df, path)
+    return df
+
+
+def get_player_on_off(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Team net rating with each player on vs. off the court, one row per player-team
+    (traded players get a row per team). Totals; MIN_ON / MIN_OFF are minutes.
+    """
+    key = f"on_off_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    cols = ["VS_PLAYER_ID", "VS_PLAYER_NAME", "GP", "MIN", "OFF_RATING", "DEF_RATING", "NET_RATING"]
+    frames = []
+    for team in teams.get_teams():
+        result = _sleep_and_fetch(
+            TeamPlayerOnOffSummary,
+            team_id=team["id"],
+            season=season,
+            season_type_all_star=season_type,
+            timeout=60,
+        )
+        on = result.players_on_court_team_player_on_off_summary.get_data_frame()[cols]
+        off = result.players_off_court_team_player_on_off_summary.get_data_frame()[cols]
+        merged = on.merge(off.drop(columns=["VS_PLAYER_NAME", "GP"]), on="VS_PLAYER_ID",
+                          suffixes=("_ON", "_OFF"))
+        merged["TEAM_ID"] = team["id"]
+        merged["TEAM_ABBREVIATION"] = team["abbreviation"]
+        frames.append(merged)
+
+    df = pd.concat(frames, ignore_index=True).rename(
+        columns={"VS_PLAYER_ID": "PLAYER_ID", "VS_PLAYER_NAME": "PLAYER_NAME"})
+    # "Last, First" -> "First Last"
+    df["PLAYER_NAME"] = df["PLAYER_NAME"].str.replace(r"^(.*?), (.*)$", r"\2 \1", regex=True)
+    df["NET_DIFF"] = df["NET_RATING_ON"] - df["NET_RATING_OFF"]
     save_to_cache(df, path)
     return df
 
