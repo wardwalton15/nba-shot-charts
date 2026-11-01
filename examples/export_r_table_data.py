@@ -2,7 +2,8 @@
 Export data for the R/gt tables in r/:
   - r/data/pnr_ballhandler_<season>.csv   Synergy P&R ballhandler totals per player
   - r/data/assist_pairs_<season>.csv      assister -> scorer counts
-  - r/data/on_off_<season>.csv            team net rating with each player on / off court
+  - r/data/on_off_<season>.csv            team net rating with each player on / off court,
+                                          plus an IS_ROOKIE flag
 
 Run from repo root (refreshes the in-progress season):
     .venv/bin/python examples/export_r_table_data.py
@@ -70,9 +71,16 @@ def main():
     print(f"Wrote {pairs_path} ({len(agg)} duos)")
 
     on_off = get_player_on_off(args.season, args.season_type, refresh=refresh)
+    rookies = _sleep_and_fetch(
+        LeagueDashPlayerStats,
+        season=args.season,
+        season_type_all_star=args.season_type,
+        player_experience_nullable="Rookie",
+    ).get_data_frames()[0]["PLAYER_ID"]
+    on_off["IS_ROOKIE"] = on_off["PLAYER_ID"].isin(rookies).astype(int)
     on_off_path = OUT_DIR / f"on_off_{args.season}.csv"
     on_off.sort_values("NET_DIFF", ascending=False).to_csv(on_off_path, index=False)
-    print(f"Wrote {on_off_path} ({len(on_off)} player-team rows)")
+    print(f"Wrote {on_off_path} ({len(on_off)} player-team rows, {on_off['IS_ROOKIE'].sum()} rookie)")
 
 
 if __name__ == "__main__":

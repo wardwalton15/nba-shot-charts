@@ -5,12 +5,15 @@
 #   .venv/bin/python examples/export_r_table_data.py
 #   Rscript r/on_off_table.R                  # defaults: 2026-27, min 150 minutes, top 10
 #   Rscript r/on_off_table.R 2026-27 200 15
+#   Rscript r/on_off_table.R --rookies        # rookies only, default min 100 minutes
 
 source("r/gt_helpers.R")
 
 args <- commandArgs(trailingOnly = TRUE)
+rookies <- "--rookies" %in% args
+args <- setdiff(args, "--rookies")
 season <- if (length(args) >= 1) args[1] else "2026-27"
-min_min <- if (length(args) >= 2) as.integer(args[2]) else 150L
+min_min <- if (length(args) >= 2) as.integer(args[2]) else if (rookies) 100L else 150L
 top_n <- if (length(args) >= 3) as.integer(args[3]) else 10L
 
 path <- sprintf("r/data/on_off_%s.csv", season)
@@ -18,7 +21,7 @@ on_off <- read.csv(path) |>
   group_by(PLAYER_ID) |>
   slice_max(MIN_ON, n = 1, with_ties = FALSE) |>  # traded players: team with the most minutes
   ungroup() |>
-  filter(MIN_ON >= min_min)
+  filter(MIN_ON >= min_min, !rookies | IS_ROOKIE == 1)
 
 top <- on_off |>
   arrange(desc(NET_DIFF), desc(MIN_ON)) |>
@@ -39,7 +42,8 @@ on_off_tbl <- top |>
              NET_RATING_ON = "Net On", NET_RATING_OFF = "Net Off", NET_DIFF = "On/Off") |>
   fmt_number(MIN_ON, decimals = 0) |>
   fmt(c(NET_RATING_ON, NET_RATING_OFF, NET_DIFF), fns = signed) |>
-  data_color(NET_DIFF, palette = c("#F1F5F9", "#2F855A"), domain = c(0, max(top$NET_DIFF))) |>
+  data_color(NET_DIFF, palette = c("#C53030", "#F1F5F9", "#2F855A"),
+             domain = c(-1, 1) * max(abs(top$NET_DIFF))) |>
   tab_style(cell_text(weight = "bold", size = px(18)), cells_body(NET_DIFF)) |>
   tab_style(cell_text(color = "#2F855A"), cells_body(NET_RATING_ON, rows = NET_RATING_ON > 0)) |>
   tab_style(cell_text(color = "#C53030"), cells_body(NET_RATING_ON, rows = NET_RATING_ON < 0)) |>
@@ -49,11 +53,11 @@ on_off_tbl <- top |>
   tab_footnote("Team net rating with player on court minus with player off court.",
                cells_column_labels(NET_DIFF)) |>
   theme_nba_table(
-    "Biggest On/Off Impact",
-    sprintf("Net rating on/off differential · %s regular season · min. %d minutes (%d players qualify)",
-            season, min_min, nrow(on_off)),
+    if (rookies) "Biggest Rookie On/Off Impact" else "Biggest On/Off Impact",
+    sprintf("Net rating on/off differential · %s regular season · min. %d minutes (%d %s qualify)",
+            season, min_min, nrow(on_off), if (rookies) "rookies" else "players"),
     paste0("Data: NBA.com, as of ", data_as_of(path), ". Net rating = points per 100 possessions, ",
            "scored minus allowed. Early-season samples are small and noisy.")
   )
 
-save_table(on_off_tbl, sprintf("on_off_%s", season))
+save_table(on_off_tbl, sprintf(if (rookies) "on_off_rookies_%s" else "on_off_%s", season))
