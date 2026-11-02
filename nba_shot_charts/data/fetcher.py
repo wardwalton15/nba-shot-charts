@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 from nba_api.stats.endpoints import (
     CommonPlayerInfo,
+    LeagueDashPlayerStats,
     LeagueDashTeamStats,
     LeagueGameFinder,
     PlayByPlayV3,
@@ -496,3 +497,50 @@ def get_team_logo(abbreviation: str) -> np.ndarray:
 
     img = Image.open(path).convert("RGBA")
     return np.asarray(img.crop(img.getbbox()))
+
+
+def get_player_scoring(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    League-wide player season totals, one row per player: box-score totals (FGA, FTA,
+    PTS, ...) joined with advanced rates (USG_PCT, TS_PCT).
+    """
+    key = f"player_scoring_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    frames = [
+        _sleep_and_fetch(
+            LeagueDashPlayerStats,
+            season=season,
+            season_type_all_star=season_type,
+            measure_type_detailed_defense=measure,
+            per_mode_detailed="Totals",
+        ).get_data_frames()[0]
+        for measure in ("Base", "Advanced")
+    ]
+    base, adv = frames
+    df = base.merge(adv[["PLAYER_ID", "USG_PCT", "TS_PCT"]], on="PLAYER_ID")
+    save_to_cache(df, path)
+    return df
+
+
+def get_player_headshot(player_id: int) -> np.ndarray:
+    """Player headshot (1040x760 RGBA PNG from the NBA CDN), cached under cache/images."""
+    from PIL import Image
+
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+    path = IMG_DIR / f"headshot_{player_id}.png"
+    if not path.exists():
+        resp = requests.get(
+            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png", timeout=20
+        )
+        resp.raise_for_status()
+        path.write_bytes(resp.content)
+
+    return np.asarray(Image.open(path).convert("RGBA"))

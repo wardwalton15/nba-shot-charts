@@ -720,3 +720,155 @@ def team_tiers_chart(
     if save_path:
         fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
     return fig, ax
+
+
+# Labels for players whose last name is too long to sit under a headshot
+_SHORT_NAMES = {
+    "Shai Gilgeous-Alexander": "SGA",
+    "Giannis Antetokounmpo": "GIANNIS",
+    "Victor Wembanyama": "WEMBY",
+}
+
+
+def _circle_headshot(img: np.ndarray, ring: str, ring_frac: float = 0.06) -> np.ndarray:
+    """Crop a 1040x760 NBA headshot to a circle (face-centered) with a colored ring."""
+    from matplotlib.colors import to_rgba
+
+    h, w = img.shape[:2]
+    side = h
+    x0 = (w - side) // 2
+    sq = img[:, x0:x0 + side].astype(float) / 255
+    yy, xx = np.mgrid[:side, :side]
+    r = np.hypot(xx - side / 2, yy - side / 2) / (side / 2)
+
+    out = np.zeros((side, side, 4))
+    out[...] = (0.93, 0.91, 0.87, 1.0)  # backdrop behind the cutout
+    alpha = sq[..., 3:4]
+    out[..., :3] = sq[..., :3] * alpha + out[..., :3] * (1 - alpha)
+    out[r >= 1 - ring_frac] = to_rgba(ring)
+    out[r >= 1, 3] = 0
+    return out
+
+
+def volume_efficiency_chart(
+    df: pd.DataFrame,
+    headshots: dict,
+    league_ts: float,
+    tag: str,
+    note: str = "",
+    credit: str = "",
+    fig_size: tuple = (9, 16),
+    head_in: float = 0.62,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Portrait usage-vs-true-shooting scatter. Players with a headshot get a circular
+    photo and name; everyone else is a plain dot.
+
+    Args:
+        df:         Rows with PLAYER_ID, PLAYER_NAME, USG_PCT, TS_PCT (as fractions)
+        headshots:  PLAYER_ID -> RGBA array, for the players to call out
+        league_ts:  League-wide true shooting %; sets each headshot's ring color
+        tag:        Text for the banner above the title, e.g. "ENTERING NOV 2"
+        head_in:    Headshot diameter in inches
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.patches import Rectangle
+
+    plt.rcParams["font.family"] = ["Arial", "DejaVu Sans"]
+    fig = plt.figure(figsize=fig_size, facecolor=_TIER_BG)
+
+    # Header
+    fig.patches.append(Rectangle((0.06, 0.948), 0.29, 0.03, transform=fig.transFigure,
+                                 fc=_TIER_ACCENT, ec="none"))
+    fig.text(0.205, 0.963, tag, ha="center", va="center", fontsize=15,
+             fontweight="bold", color="white")
+    fig.text(0.06, 0.905, "VOLUME VS. EFFICIENCY", ha="left", va="center", fontsize=40,
+             fontweight="bold", color=_TIER_INK)
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.866, 0.866], color="#cfc8ba", lw=1))
+    fig.text(0.065, 0.845, "NBA SCORERS", ha="left", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_INK)
+    fig.text(0.935, 0.845, "MORE & BETTER  ↗", ha="right", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_ACCENT)
+
+    usg = df["USG_PCT"].to_numpy() * 100
+    ts = df["TS_PCT"].to_numpy() * 100
+    league_ts *= 100
+
+    ax_rect = [0.12, 0.215, 0.82, 0.605]
+    ax_w_in, ax_h_in = ax_rect[2] * fig_size[0], ax_rect[3] * fig_size[1]
+    pad = 2.5
+    xlo, xhi = usg.min() - pad, usg.max() + pad
+    # Extra room at the bottom so the lower quadrant captions clear the lowest player
+    ylo, yhi = ts.min() - pad - 2, ts.max() + pad
+    ax = fig.add_axes(ax_rect)
+    ax.set_xlim(xlo, xhi)
+    ax.set_ylim(ylo, yhi)
+    ax.set_facecolor(_TIER_BG)
+
+    # Quadrant captions in the corners
+    corner = dict(fontsize=11, fontweight="bold", alpha=0.75)
+    ax.text(xhi - 0.3, yhi - 0.4, "HEAVY LOAD, EFFICIENT", ha="right", va="top",
+            color=_TIER_ACCENT, **corner)
+    ax.text(xlo + 0.3, yhi - 0.4, "LIGHT LOAD, EFFICIENT", ha="left", va="top",
+            color="#5b6b3a", **corner)
+    ax.text(xhi - 0.3, ylo + 0.4, "HEAVY LOAD, INEFFICIENT", ha="right", va="bottom",
+            color="#8a6236", **corner)
+    ax.text(xlo + 0.3, ylo + 0.4, "LIGHT LOAD, INEFFICIENT", ha="left", va="bottom",
+            color="#9a4a48", **corner)
+
+    # The pack: plain dots
+    called = df["PLAYER_ID"].isin(headshots).to_numpy()
+    ax.scatter(usg[~called], ts[~called], s=70, color="#9a9488", edgecolor=_TIER_BG,
+               lw=1.5, zorder=2)
+
+    # Outliers: circular headshots, nudged apart, leader line back to the true spot
+    x_per_in, y_per_in = (xhi - xlo) / ax_w_in, (yhi - ylo) / ax_h_in
+    anchors = np.c_[usg[called] / x_per_in, ts[called] / y_per_in]  # inches, so spacing is round
+    lab_in = 0.3  # room for the name below the photo
+    placed = _spread_points(anchors, head_in + lab_in,
+                            (np.array([xlo / x_per_in, ylo / y_per_in]),
+                             np.array([xhi / x_per_in, yhi / y_per_in])))
+    for (_, row), (ax0, ay0), (px, py) in zip(df[called].iterrows(), anchors, placed):
+        a = (ax0 * x_per_in, ay0 * y_per_in)
+        p = (px * x_per_in, py * y_per_in)
+        good = row["TS_PCT"] * 100 >= league_ts
+        ring = _TIER_ACCENT if good else "#9a4a48"
+        if np.hypot(px - ax0, py - ay0) > head_in * 0.15:
+            ax.plot([a[0], p[0]], [a[1], p[1]], color="#77716a", lw=1, zorder=3)
+            ax.scatter([a[0]], [a[1]], s=14, color="#77716a", zorder=3, lw=0)
+        img = _circle_headshot(headshots[row["PLAYER_ID"]], ring)
+        zoom = head_in * 72 / img.shape[0]
+        ax.add_artist(AnnotationBbox(OffsetImage(img, zoom=zoom), p, frameon=False, zorder=4))
+        name = row["PLAYER_NAME"]
+        ax.annotate(_SHORT_NAMES.get(name, name.split(" ", 1)[-1].upper()), p,
+                    xytext=(0, -head_in * 72 / 2 - 2), textcoords="offset points",
+                    ha="center", va="top", fontsize=8.5, fontweight="bold",
+                    color=_TIER_INK, zorder=5)
+
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+    ax.set_xticks(np.arange(np.ceil(xlo / 5) * 5, xhi, 5))
+    ax.set_yticks(np.arange(np.ceil(ylo / 5) * 5, yhi, 5))
+    ax.tick_params(length=0, labelsize=12, labelcolor="#6b665d", pad=8)
+    ax.grid(color="#e4ded2", lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_color("#cfc8ba")
+    ax.set_xlabel("USAGE RATE  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+    ax.set_ylabel("TRUE SHOOTING %  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+
+    if note:
+        fig.text(0.065, 0.105, note, ha="left", va="center", fontsize=10.5,
+                 color="#6b665d", linespacing=1.5)
+    fig.text(0.065, 0.05, "SOURCE: NBA.COM/STATS", ha="left", va="center", fontsize=12,
+             fontweight="bold", color="#77716a")
+    if credit:
+        fig.text(0.935, 0.05, credit, ha="right", va="center", fontsize=12,
+                 fontweight="bold", color="#77716a")
+
+    if save_path:
+        fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
+    return fig, ax

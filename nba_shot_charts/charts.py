@@ -1,13 +1,16 @@
 import datetime
 
 import matplotlib.pyplot as plt
+import numpy as np
 
-from .data.fetcher import (get_assist_shots, get_league_averages, get_player_id, get_shot_chart,
+from .data.fetcher import (get_assist_shots, get_league_averages, get_player_headshot, get_player_id,
+                           get_player_scoring, get_shot_chart,
                            get_team_games, get_team_id, get_team_logo, get_team_ratings,
                            get_team_shot_chart)
 from .plotter import (efficiency_diff_chart, freq_diff_chart, hexbin_shot_chart,
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
-                      team_tiers_chart, three_point_zone_chart)
+                      team_tiers_chart, three_point_zone_chart,
+                      volume_efficiency_chart)
 
 
 def player_shot_chart(
@@ -273,6 +276,69 @@ def team_ratings_chart(
 
     fig, ax = team_tiers_chart(df, logos, league_avg, tag, note=note, credit=credit,
                                save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def scorer_volume_efficiency_chart(
+    season: str,
+    season_type: str = "Regular Season",
+    min_fga: int = 75,
+    outlier_dist: float = 1.75,
+    usg_floor: float = 0.30,
+    ts_floor: float = 0.64,
+    as_of: datetime.date | None = None,
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Usage rate vs. true shooting % for every player above a shot-attempt floor, with
+    headshots on the outliers and the high-usage / high-TS% players, and plain dots
+    for the pack.
+
+    Args:
+        season:       NBA season string, e.g. "2026-27"
+        season_type:  "Regular Season" or "Playoffs"
+        min_fga:      Players need more than this many field-goal attempts
+        outlier_dist: Mahalanobis distance from the group center (in USG%/TS% space)
+                      beyond which an above-average-usage player gets a headshot;
+                      lower shows more faces
+        usg_floor:    Players with usage above this also get a headshot
+        ts_floor:     Players with TS% above this also get a headshot
+        as_of:        Date for the "ENTERING ..." banner; defaults to today
+        credit:       Byline in the bottom-right corner
+        refresh:      Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:    File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    all_players = get_player_scoring(season, season_type, refresh=refresh)
+    df = all_players[all_players["FGA"] > min_fga].reset_index(drop=True)
+
+    # Distance from the group center, scaled by the group's own spread and correlation
+    pts = df[["USG_PCT", "TS_PCT"]].to_numpy()
+    dev = pts - pts.mean(axis=0)
+    dist = np.sqrt(np.einsum("ij,jk,ik->i", dev, np.linalg.inv(np.cov(pts.T)), dev))
+    # Only heavy-load outliers get a face; light-load ones stay in the pack
+    heavy = df["USG_PCT"] > df["USG_PCT"].mean()
+    called = ((dist > outlier_dist) & heavy) | (df["USG_PCT"] > usg_floor) | (df["TS_PCT"] > ts_floor)
+    headshots = {pid: get_player_headshot(pid) for pid in df.loc[called, "PLAYER_ID"]}
+
+    league_ts = all_players["PTS"].sum() / (
+        2 * (all_players["FGA"].sum() + 0.44 * all_players["FTA"].sum()))
+
+    as_of = as_of or datetime.date.today()
+    tag = f"ENTERING {as_of.strftime('%b').upper()} {as_of.day}"
+    note = (f"{season} {season_type.lower()}, players with more than {min_fga} FGA"
+            f" ({len(df)} players).\nUsage = share of team plays used while on court."
+            " TS% = PTS / (2 × (FGA + 0.44 × FTA)).\nRing: green = above league-average"
+            f" TS% ({league_ts:.1%}), red = below.")
+
+    fig, ax = volume_efficiency_chart(df, headshots, league_ts, tag, note=note,
+                                      credit=credit, save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax
