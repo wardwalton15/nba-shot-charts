@@ -4,6 +4,8 @@ Export data for the R/gt tables in r/:
   - r/data/assist_pairs_<season>.csv      assister -> scorer counts
   - r/data/on_off_<season>.csv            team net rating with each player on / off court,
                                           plus an IS_ROOKIE flag
+  - r/data/dribbles_7plus_<season>.csv    shooting on 7+ dribble FGA, with share of total FGA
+  - r/data/usage_change_<season>.csv      usage rate this season vs. last, one row per player
 
 Run from repo root (refreshes the in-progress season):
     .venv/bin/python examples/export_r_table_data.py
@@ -18,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 from nba_shot_charts.data.fetcher import (
-    _sleep_and_fetch, get_assist_pairs, get_play_type_stats, get_player_on_off,
+    _sleep_and_fetch, get_assist_pairs, get_dribble_shooting, get_play_type_stats, get_player_on_off,
+    get_player_scoring,
 )
 
 OUT_DIR = Path(__file__).parent.parent / "r" / "data"
@@ -81,6 +84,23 @@ def main():
     on_off_path = OUT_DIR / f"on_off_{args.season}.csv"
     on_off.sort_values("NET_DIFF", ascending=False).to_csv(on_off_path, index=False)
     print(f"Wrote {on_off_path} ({len(on_off)} player-team rows, {on_off['IS_ROOKIE'].sum()} rookie)")
+
+    dribbles = get_dribble_shooting("7+ Dribbles", args.season, args.season_type, refresh=refresh)
+    dribbles_path = OUT_DIR / f"dribbles_7plus_{args.season}.csv"
+    dribbles.sort_values("FGA_FREQUENCY", ascending=False).to_csv(dribbles_path, index=False)
+    print(f"Wrote {dribbles_path} ({len(dribbles)} players)")
+
+    start = int(args.season[:4]) - 1
+    prev_season = f"{start}-{str(start + 1)[2:]}"
+    usage_cols = ["PLAYER_ID", "PLAYER_NAME", "TEAM_ID", "TEAM_ABBREVIATION", "GP", "MIN", "USG_PCT"]
+    cur = get_player_scoring(args.season, args.season_type, refresh=refresh)[usage_cols]
+    # Last season is final, so the cache never needs refreshing
+    prev = get_player_scoring(prev_season, args.season_type)[usage_cols]
+    usage = cur.merge(prev.drop(columns="PLAYER_NAME"), on="PLAYER_ID", suffixes=("", "_PREV"))
+    usage["USG_DIFF"] = usage["USG_PCT"] - usage["USG_PCT_PREV"]
+    usage_path = OUT_DIR / f"usage_change_{args.season}.csv"
+    usage.sort_values("USG_DIFF", ascending=False).to_csv(usage_path, index=False)
+    print(f"Wrote {usage_path} ({len(usage)} players in both {prev_season} and {args.season})")
 
 
 if __name__ == "__main__":

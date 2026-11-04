@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 from nba_api.stats.endpoints import (
     CommonPlayerInfo,
+    LeagueDashPlayerPtShot,
     LeagueDashPlayerStats,
     LeagueDashTeamStats,
     LeagueGameFinder,
@@ -471,6 +472,43 @@ def get_player_on_off(
     # "Last, First" -> "First Last"
     df["PLAYER_NAME"] = df["PLAYER_NAME"].str.replace(r"^(.*?), (.*)$", r"\2 \1", regex=True)
     df["NET_DIFF"] = df["NET_RATING_ON"] - df["NET_RATING_OFF"]
+    save_to_cache(df, path)
+    return df
+
+
+def get_dribble_shooting(
+    dribble_range: str,
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Player tracking shooting totals on shots taken after `dribble_range` dribbles
+    (e.g. "0 Dribbles", "7+ Dribbles"), one row per player, plus TOTAL_FGA across
+    all shots. FGA_FREQUENCY = share of the player's FGA in that dribble range.
+    """
+    key = f"pt_shot_{dribble_range.replace(' ', '_').replace('+', 'plus')}_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    def fetch(**kwargs):
+        return _sleep_and_fetch(
+            LeagueDashPlayerPtShot,
+            season=season,
+            season_type_all_star=season_type,
+            per_mode_simple="Totals",
+            timeout=60,
+            **kwargs,
+        ).get_data_frames()[0]
+
+    # Start from all shots so players with no shots in the range still appear (as zeros)
+    id_cols = ["PLAYER_ID", "PLAYER_NAME", "PLAYER_LAST_TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION", "GP"]
+    total = fetch()[id_cols + ["FGA"]].rename(columns={"FGA": "TOTAL_FGA"})
+    ranged = fetch(dribble_range_nullable=dribble_range).drop(columns=id_cols[1:] + ["AGE", "G"])
+    df = total.merge(ranged, on="PLAYER_ID", how="left").fillna(0).rename(columns={
+        "PLAYER_LAST_TEAM_ID": "TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
     save_to_cache(df, path)
     return df
 
