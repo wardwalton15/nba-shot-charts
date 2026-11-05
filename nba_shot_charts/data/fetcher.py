@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import requests
 from nba_api.stats.endpoints import (
+    BoxScoreTraditionalV3,
     CommonPlayerInfo,
     LeagueDashPlayerPtShot,
     LeagueDashPlayerStats,
@@ -140,10 +141,12 @@ def get_shot_chart(
     player_id: int,
     season: str,
     season_type: str,
+    refresh: bool = False,
 ) -> pd.DataFrame:
+    """Set refresh=True for an in-progress season so new games aren't missed."""
     key = f"shots_player_{player_id}_{season}_{season_type.replace(' ', '_')}"
     path = cache_path(key)
-    cached = load_from_cache(path)
+    cached = None if refresh else load_from_cache(path)
     if cached is not None:
         return cached
 
@@ -192,6 +195,25 @@ def _get_game_shots(game_id: str) -> pd.DataFrame:
     df = result.get_data_frames()[0]
     save_to_cache(df, path)
     return df
+
+
+def get_game_box(game_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Traditional box score for one game: (player rows, team rows)."""
+    pkey, tkey = cache_path(f"box_players_{game_id}"), cache_path(f"box_teams_{game_id}")
+    p_cached, t_cached = load_from_cache(pkey), load_from_cache(tkey)
+    if p_cached is not None and t_cached is not None:
+        return p_cached, t_cached
+
+    frames = _sleep_and_fetch(BoxScoreTraditionalV3, game_id=game_id).get_data_frames()
+    player_df, team_df = frames[0], frames[2]
+    save_to_cache(player_df, pkey)
+    save_to_cache(team_df, tkey)
+    return player_df, team_df
+
+
+def get_game_shots(game_id: str) -> pd.DataFrame:
+    """Every field-goal attempt in one game, both teams."""
+    return _get_game_shots(game_id)
 
 
 def _get_game_ids(season: str, season_type: str, refresh: bool = False) -> list[str]:

@@ -579,6 +579,8 @@ _TIER_ACCENT = "#2e7656"
 def _spread_points(pts: np.ndarray, min_dist: float, bounds: tuple, iters: int = 400) -> np.ndarray:
     """Nudge overlapping points apart while pulling each gently back to its anchor."""
     pos = pts.astype(float).copy()
+    # Identical points have no direction to push along; a tiny fixed offset breaks the tie
+    pos += np.random.default_rng(0).normal(scale=min_dist * 1e-3, size=pos.shape)
     lo, hi = bounds
     for _ in range(iters):
         delta = pos[:, None, :] - pos[None, :, :]
@@ -872,3 +874,139 @@ def volume_efficiency_chart(
     if save_path:
         fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
     return fig, ax
+
+
+# --- Single-game shot card (9:16, sized for TikTok / Reels / Shorts) ---
+_CARD_BG = "#0e1116"
+_CARD_COURT = "#3b4350"
+_CARD_INK = "#f2f4f7"
+_CARD_INK_2 = "#a3abb8"
+_CARD_INK_3 = "#6b7380"
+_CARD_MADE = "#2dd4bf"
+_CARD_MISS = "#8a919c"
+
+_CARD_ZONES = [
+    ("AT THE RIM", ["Restricted Area"]),
+    ("PAINT", ["In The Paint (Non-RA)"]),
+    ("MIDRANGE", ["Mid-Range"]),
+    ("THREE", ["Left Corner 3", "Right Corner 3", "Above the Break 3", "Backcourt"]),
+]
+
+
+def game_shot_card(
+    shots: pd.DataFrame,
+    player_name: str,
+    stat_line: dict,
+    matchup: str,
+    result: str,
+    headshot: np.ndarray | None = None,
+    accent: str = _CARD_MADE,
+    credit: str = "",
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Vertical 1080x1920 shot chart for one player's game. Made shots are filled dots,
+    misses are gray X's, so make/miss never depends on color alone.
+
+    Args:
+        shots:       ShotChartDetail rows for the player in this game
+        player_name: Display name
+        stat_line:   Ordered {label: value} for the stat row, e.g. {"PTS": 52, ...};
+                     the first entry is also the headline number
+        matchup:     e.g. "VS DAL  ·  NOV 4, 2026"
+        result:      e.g. "W 112–111"
+        headshot:    Optional RGBA headshot (NBA CDN 1040x760)
+        accent:      Color for made shots and highlights
+        credit:      Byline at the bottom
+    """
+    fig = plt.figure(figsize=(9, 16), facecolor=_CARD_BG)
+
+    # Header -------------------------------------------------------------
+    text_x = 0.07
+    if headshot is not None:
+        hax = fig.add_axes((0.05, 0.835, 0.25, 0.25 * 9 / 16))
+        hax.imshow(_card_headshot(headshot, accent))
+        hax.axis("off")
+        text_x = 0.33
+
+    head_label, head_val = next(iter(stat_line.items()))
+    fig.text(text_x, 0.935, player_name.upper(), color=_CARD_INK_2, fontsize=19,
+             fontweight="bold", va="center")
+    big = fig.text(text_x, 0.888, f"{head_val}", color=_CARD_INK, fontsize=74,
+                   fontweight="heavy", va="center")
+    big_box = big.get_window_extent(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted())
+    fig.text(big_box.x1 + 0.015, big_box.y0 + 0.016, head_label, color=accent,
+             fontsize=30, fontweight="heavy", va="baseline")
+    fig.text(text_x, 0.845, f"{matchup}   ·   {result}", color=_CARD_INK_2, fontsize=15,
+             fontweight="bold", va="center")
+
+    # Stat row -------------------------------------------------------------
+    rest = list(stat_line.items())[1:]
+    n = len(rest)
+    x0, x1 = 0.06, 0.94
+    for i, (label, val) in enumerate(rest):
+        cx = x0 + (x1 - x0) * (i + 0.5) / n
+        fig.text(cx, 0.775, str(val), color=_CARD_INK, fontsize=27, fontweight="heavy",
+                 ha="center", va="center")
+        fig.text(cx, 0.748, label, color=_CARD_INK_3, fontsize=13, fontweight="bold",
+                 ha="center", va="center")
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.725, 0.725], color=_CARD_COURT, lw=1))
+
+    # Court ----------------------------------------------------------------
+    ax = fig.add_axes((0.03, 0.27, 0.94, 0.45))
+    ax.set_facecolor(_CARD_BG)
+    draw_court(ax, color=_CARD_COURT, lw=2)
+    ax.set_ylim(-60, 330)  # every shot here is inside ~30 ft; drop the empty backcourt strip
+
+    made = shots[shots["SHOT_MADE_FLAG"] == 1]
+    missed = shots[shots["SHOT_MADE_FLAG"] == 0]
+    ax.scatter(missed["LOC_X"], missed["LOC_Y"], marker="x", s=110, c=_CARD_MISS,
+               linewidths=2.5, zorder=3)
+    ax.scatter(made["LOC_X"], made["LOC_Y"], marker="o", s=130, c=accent,
+               edgecolors=_CARD_BG, linewidths=1.5, zorder=4)
+
+    # Legend just under the court
+    lx = 0.33
+    fig.add_artist(plt.Line2D([lx], [0.255], marker="o", markersize=13, color=accent,
+                              markeredgecolor=_CARD_BG, transform=fig.transFigure))
+    fig.text(lx + 0.03, 0.255, f"MADE  {len(made)}", color=_CARD_INK_2, fontsize=14,
+             fontweight="bold", va="center")
+    fig.add_artist(plt.Line2D([lx + 0.22], [0.255], marker="x", markersize=12, color=_CARD_MISS,
+                              markeredgewidth=3, transform=fig.transFigure))
+    fig.text(lx + 0.25, 0.255, f"MISSED  {len(missed)}", color=_CARD_INK_2, fontsize=14,
+             fontweight="bold", va="center")
+
+    # Zone breakdown ---------------------------------------------------------
+    for i, (label, zones) in enumerate(_CARD_ZONES):
+        z = shots[shots["SHOT_ZONE_BASIC"].isin(zones)]
+        fgm, fga = int(z["SHOT_MADE_FLAG"].sum()), len(z)
+        cx = x0 + (x1 - x0) * (i + 0.5) / len(_CARD_ZONES)
+        fig.text(cx, 0.205, f"{fgm}/{fga}", color=_CARD_INK, fontsize=24, fontweight="heavy",
+                 ha="center", va="center")
+        fig.text(cx, 0.18, label, color=_CARD_INK_3, fontsize=12, fontweight="bold",
+                 ha="center", va="center")
+
+    if credit:
+        fig.text(0.5, 0.135, credit, color=_CARD_INK_3, fontsize=12, fontweight="bold",
+                 ha="center", va="center")
+
+    if save_path:
+        fig.savefig(save_path, dpi=120, facecolor=_CARD_BG)
+    return fig, ax
+
+
+def _card_headshot(img: np.ndarray, ring: str) -> np.ndarray:
+    """Circle-cropped headshot on a dark backdrop with an accent ring."""
+    from matplotlib.colors import to_rgba
+
+    out = _circle_headshot(img, ring, ring_frac=0.04)
+    h, w = out.shape[:2]
+    yy, xx = np.mgrid[:h, :w]
+    r = np.hypot(xx - w / 2, yy - h / 2) / (w / 2)
+    # _circle_headshot paints a light backdrop; swap it for a dark one inside the ring
+    src = img[:, (img.shape[1] - img.shape[0]) // 2:][:, :h].astype(float) / 255
+    alpha = src[..., 3:4]
+    back = np.array(to_rgba("#1c222b")[:3])
+    inner = r < 0.96
+    out[inner, :3] = (src[..., :3] * alpha + back * (1 - alpha))[inner]
+    return out
