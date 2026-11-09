@@ -8,6 +8,7 @@ from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_l
                            get_team_games, get_team_id, get_team_logo, get_team_ratings,
                            get_team_shot_chart)
 from .plotter import (efficiency_diff_chart, freq_diff_chart, game_shot_card, hexbin_shot_chart,
+                      mystery_shot_card,
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
                       team_tiers_chart, three_point_zone_chart,
                       volume_efficiency_chart)
@@ -107,6 +108,37 @@ def player_game_shot_chart(
     fig, ax = game_shot_card(shots, player_name, stat_line, matchup, result,
                              headshot=get_player_headshot(player_id),
                              credit=credit, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def mystery_player_shot_chart(
+    player_name: str,
+    season: str,
+    season_type: str = "Regular Season",
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Vertical (9:16) season shot chart with no name, headshot, team or dates on it,
+    for "guess the player" videos.
+
+    Args:
+        player_name: Full name, e.g. "Rudy Gobert" (used only to fetch data)
+        season:      NBA season string, e.g. "2026-27"
+        season_type: "Regular Season" or "Playoffs"
+        credit:      Byline at the bottom
+        refresh:     Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:   File path to save PNG; if None, calls plt.show()
+    """
+    player_id = get_player_id(player_name)
+    df = get_shot_chart(player_id, season, season_type, refresh=refresh)
+    if df.empty:
+        raise ValueError(f"No shot data found for {player_name} in {season} {season_type}")
+
+    fig, ax = mystery_shot_card(df, credit=credit, save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax

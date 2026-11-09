@@ -1010,3 +1010,71 @@ def _card_headshot(img: np.ndarray, ring: str) -> np.ndarray:
     inner = r < 0.96
     out[inner, :3] = (src[..., :3] * alpha + back * (1 - alpha))[inner]
     return out
+
+
+def mystery_shot_card(
+    shots: pd.DataFrame,
+    accent: str = _CARD_MADE,
+    credit: str = "",
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Vertical 1080x1920 season shot chart with nothing that identifies the player: no
+    name, headshot, team, games or dates. Meant as a "guess the player" video background,
+    so the top of the frame is left clear for on-screen captions.
+
+    Args:
+        shots:   ShotChartDetail rows for the player
+        accent:  Color for made shots
+        credit:  Byline at the bottom
+    """
+    fig = plt.figure(figsize=(9, 16), facecolor=_CARD_BG)
+
+    # Court ----------------------------------------------------------------
+    ax = fig.add_axes((0.03, 0.30, 0.94, 0.47))
+    ax.set_facecolor(_CARD_BG)
+    draw_court(ax, color=_CARD_COURT, lw=2)
+    # Same frame for every player so a series of cards lines up; heaves past ~33 ft
+    # fall off the top but still count in the totals below
+    ax.set_ylim(-60, 330)
+
+    made = shots[shots["SHOT_MADE_FLAG"] == 1]
+    missed = shots[shots["SHOT_MADE_FLAG"] == 0]
+    ax.scatter(missed["LOC_X"], missed["LOC_Y"], marker="x", s=55, c=_CARD_MISS,
+               linewidths=1.8, alpha=0.8, zorder=3)
+    ax.scatter(made["LOC_X"], made["LOC_Y"], marker="o", s=70, c=accent,
+               edgecolors=_CARD_BG, linewidths=1.0, alpha=0.9, zorder=4)
+
+    # Legend just under the court
+    lx = 0.33
+    ly = 0.28
+    fig.add_artist(plt.Line2D([lx], [ly], marker="o", markersize=13, color=accent,
+                              markeredgecolor=_CARD_BG, transform=fig.transFigure))
+    fig.text(lx + 0.03, ly, f"MADE  {len(made)}", color=_CARD_INK_2, fontsize=14,
+             fontweight="bold", va="center")
+    fig.add_artist(plt.Line2D([lx + 0.22], [ly], marker="x", markersize=12, color=_CARD_MISS,
+                              markeredgewidth=3, transform=fig.transFigure))
+    fig.text(lx + 0.25, ly, f"MISSED  {len(missed)}", color=_CARD_INK_2, fontsize=14,
+             fontweight="bold", va="center")
+
+    # Zone breakdown ---------------------------------------------------------
+    x0, x1 = 0.06, 0.94
+    for i, (label, zones) in enumerate(_CARD_ZONES):
+        z = shots[shots["SHOT_ZONE_BASIC"].isin(zones)]
+        fgm, fga = int(z["SHOT_MADE_FLAG"].sum()), len(z)
+        pct = f"{fgm / fga * 100:.0f}%" if fga else "–"
+        cx = x0 + (x1 - x0) * (i + 0.5) / len(_CARD_ZONES)
+        fig.text(cx, 0.225, f"{fgm}/{fga}", color=_CARD_INK, fontsize=24, fontweight="heavy",
+                 ha="center", va="center")
+        fig.text(cx, 0.198, pct, color=accent, fontsize=15, fontweight="bold",
+                 ha="center", va="center")
+        fig.text(cx, 0.175, label, color=_CARD_INK_3, fontsize=12, fontweight="bold",
+                 ha="center", va="center")
+
+    if credit:
+        fig.text(0.5, 0.135, credit, color=_CARD_INK_3, fontsize=12, fontweight="bold",
+                 ha="center", va="center")
+
+    if save_path:
+        fig.savefig(save_path, dpi=120, facecolor=_CARD_BG)
+    return fig, ax
