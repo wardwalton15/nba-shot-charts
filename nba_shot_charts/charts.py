@@ -6,11 +6,11 @@ import numpy as np
 from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_league_averages, get_player_headshot, get_player_id,
                            get_player_scoring, get_shot_chart,
                            get_team_games, get_team_id, get_team_logo, get_team_ratings,
-                           get_team_shot_chart)
+                           get_team_shooting, get_team_shot_chart)
 from .plotter import (efficiency_diff_chart, freq_diff_chart, game_shot_card, hexbin_shot_chart,
                       mystery_shot_card,
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
-                      team_tiers_chart, three_point_zone_chart,
+                      team_tiers_chart, three_point_zone_chart, three_rate_chart,
                       volume_efficiency_chart)
 
 
@@ -429,6 +429,52 @@ def scorer_volume_efficiency_chart(
 
     fig, ax = volume_efficiency_chart(df, headshots, league_ts, tag, note=note,
                                       credit=credit, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def team_three_rate_chart(
+    season: str,
+    season_type: str = "Regular Season",
+    as_of: datetime.date | None = None,
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Every team's 3-point attempt rate (3PA / FGA) vs. 3P%, team logos as markers,
+    dashed lines at the league averages.
+
+    Args:
+        season:      NBA season string, e.g. "2026-27"
+        season_type: "Regular Season" or "Playoffs"
+        as_of:       Date for the "ENTERING ..." banner; defaults to today
+        credit:      Byline in the bottom-right corner
+        refresh:     Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:   File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    df = get_team_shooting(season, season_type, refresh=refresh).copy()
+    df["FG3A_RATE"] = df["FG3A"] / df["FGA"]
+    df["FG3_PCT"] = df["FG3M"] / df["FG3A"]
+    logos = {abbr: get_team_logo(abbr) for abbr in df["abbreviation"]}
+
+    league_rate = df["FG3A"].sum() / df["FGA"].sum()
+    league_pct = df["FG3M"].sum() / df["FG3A"].sum()
+
+    as_of = as_of or datetime.date.today()
+    tag = f"ENTERING {as_of.strftime('%b').upper()} {as_of.day}"
+    gp_lo, gp_hi = int(df["GP"].min()), int(df["GP"].max())
+    games = f"{gp_lo}" if gp_lo == gp_hi else f"{gp_lo}–{gp_hi}"
+    note = (f"{season} {season_type.lower()} ({games} games per team).\n"
+            "Attempt rate = share of field-goal attempts that are threes.\n"
+            "Dashed lines = league average.")
+
+    fig, ax = three_rate_chart(df, logos, league_rate, league_pct, tag, note=note,
+                               credit=credit, save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax

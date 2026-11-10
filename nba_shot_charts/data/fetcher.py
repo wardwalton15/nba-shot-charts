@@ -604,3 +604,29 @@ def get_player_headshot(player_id: int) -> np.ndarray:
         path.write_bytes(resp.content)
 
     return np.asarray(Image.open(path).convert("RGBA"))
+
+
+def get_team_shooting(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Team box-score totals, one row per team (FGA, FG3A, FG3M, FG3_PCT, GP, ...)."""
+    key = f"team_shooting_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    result = _sleep_and_fetch(
+        LeagueDashTeamStats,
+        season=season,
+        season_type_all_star=season_type,
+        measure_type_detailed_defense="Base",
+        per_mode_detailed="Totals",
+    )
+    df = result.get_data_frames()[0]
+    df = df.merge(pd.DataFrame(teams.get_teams())[["id", "abbreviation"]],
+                  left_on="TEAM_ID", right_on="id").drop(columns="id")
+    save_to_cache(df, path)
+    return df
