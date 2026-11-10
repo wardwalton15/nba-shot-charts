@@ -630,3 +630,28 @@ def get_team_shooting(
                   left_on="TEAM_ID", right_on="id").drop(columns="id")
     save_to_cache(df, path)
     return df
+
+
+def get_league_shots(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Every field-goal attempt in the league for a season (one ShotChartDetail call)."""
+    key = f"shots_league_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    result = _sleep_and_fetch(
+        ShotChartDetail,
+        player_id=0,
+        team_id=0,
+        season_nullable=season,
+        season_type_all_star=season_type,
+        context_measure_simple="FGA",
+    )
+    df = result.get_data_frames()[0]
+    save_to_cache(df, path)
+    return df

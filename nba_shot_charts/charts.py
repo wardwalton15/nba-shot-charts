@@ -3,7 +3,7 @@ import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_league_averages, get_player_headshot, get_player_id,
+from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_league_averages, get_league_shots, get_player_headshot, get_player_id,
                            get_player_scoring, get_shot_chart,
                            get_team_games, get_team_id, get_team_logo, get_team_ratings,
                            get_team_shooting, get_team_shot_chart)
@@ -12,6 +12,8 @@ from .plotter import (efficiency_diff_chart, freq_diff_chart, game_shot_card, he
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
                       team_tiers_chart, three_point_zone_chart, three_rate_chart,
                       volume_efficiency_chart)
+from .plotter import leader_zone_index
+from .plotter import zone_leaders_chart as plotter_zone_leaders_chart
 
 
 def player_shot_chart(
@@ -475,6 +477,63 @@ def team_three_rate_chart(
 
     fig, ax = three_rate_chart(df, logos, league_rate, league_pct, tag, note=note,
                                credit=credit, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def zone_leaders_chart(
+    season: str,
+    season_type: str = "Regular Season",
+    as_of: datetime.date | None = None,
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Half-court split into 11 zones, each showing the player with the most made
+    field goals from there. Ties go to the player with fewer attempts.
+
+    Args:
+        season:      NBA season string, e.g. "2026-27"
+        season_type: "Regular Season" or "Playoffs"
+        as_of:       Date for the "ENTERING ..." banner; defaults to today
+        credit:      Byline in the bottom-right corner
+        refresh:     Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:   File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    import pandas as pd
+
+    shots = get_league_shots(season, season_type, refresh=refresh).copy()
+    shots["ZONE"] = leader_zone_index(shots)
+    totals = (shots[shots["ZONE"] >= 0]
+              .groupby(["ZONE", "PLAYER_ID", "PLAYER_NAME"])
+              .agg(FGM=("SHOT_MADE_FLAG", "sum"), FGA=("SHOT_MADE_FLAG", "size"))
+              .reset_index()
+              .sort_values(["ZONE", "FGM", "FGA"], ascending=[True, False, True]))
+
+    rows = []
+    for zone, grp in totals.groupby("ZONE"):
+        first, second = grp.iloc[0], grp.iloc[1]
+        rows.append({"ZONE": zone, "PLAYER_ID": first["PLAYER_ID"],
+                     "PLAYER_NAME": first["PLAYER_NAME"],
+                     "FGM": int(first["FGM"]), "FGA": int(first["FGA"]),
+                     "RUNNER_UP": second["PLAYER_NAME"],
+                     "RUNNER_UP_FGM": int(second["FGM"])})
+    leaders = pd.DataFrame(rows).sort_values("ZONE").reset_index(drop=True)
+    headshots = {pid: get_player_headshot(pid) for pid in leaders["PLAYER_ID"].unique()}
+
+    as_of = as_of or datetime.date.today()
+    tag = f"ENTERING {as_of.strftime('%b').upper()} {as_of.day}"
+    note = (f"{season} {season_type.lower()}, {shots['GAME_ID'].nunique()} games."
+            " Ties go to the player with fewer attempts.\n"
+            "Midrange = twos outside the paint, split left/right and baseline/elbow.")
+
+    fig, ax = plotter_zone_leaders_chart(leaders, headshots, tag, season, note=note,
+                                         credit=credit, save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax

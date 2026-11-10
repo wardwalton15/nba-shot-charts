@@ -1199,3 +1199,206 @@ def three_rate_chart(
     if save_path:
         fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
     return fig, ax
+
+
+# --- Zone leaders (9:16) ------------------------------------------------------
+
+# (label, fill, headshot center, label side). The fill groups zones by shot type.
+_LEADER_ZONES = [
+    ("AT THE RIM", "#cfe3d8", (0, 2), "below"),
+    ("PAINT", "#dfe6d2", (0, 98), "above"),
+    ("LEFT BASELINE MID", "#ece4d3", (-150, 30), "below"),
+    ("LEFT ELBOW MID", "#ece4d3", (-112, 172), "below"),
+    ("RIGHT ELBOW MID", "#ece4d3", (112, 172), "below"),
+    ("RIGHT BASELINE MID", "#ece4d3", (150, 30), "below"),
+    ("LEFT CORNER 3", "#f0e0c8", (-247, 30), "below"),
+    ("LEFT WING 3", "#f0e0c8", (-200, 262), "below"),
+    ("TOP OF KEY 3", "#f0e0c8", (0, 322), "below"),
+    ("RIGHT WING 3", "#f0e0c8", (200, 262), "below"),
+    ("RIGHT CORNER 3", "#f0e0c8", (247, 30), "below"),
+]
+_BASELINE_DEG = 40  # midrange below this angle from the baseline counts as "baseline"
+
+
+def leader_zone_index(df: pd.DataFrame) -> np.ndarray:
+    """
+    Index into _LEADER_ZONES for each shot (-1 = backcourt). The NBA's own
+    SHOT_ZONE_BASIC decides rim / paint / midrange / three; the left-right and
+    baseline-elbow-wing splits come from the shot's angle around the basket.
+    """
+    x, y = df["LOC_X"].to_numpy(), df["LOC_Y"].to_numpy()
+    basic = df["SHOT_ZONE_BASIC"].to_numpy()
+    ang = np.degrees(np.arctan2(y, x))            # 0 = right baseline, 180 = left
+    low = np.degrees(np.arctan2(y, np.abs(x))) < _BASELINE_DEG
+
+    zone = np.full(len(df), -1)
+    zone[basic == "Restricted Area"] = 0
+    zone[basic == "In The Paint (Non-RA)"] = 1
+    mid = basic == "Mid-Range"
+    zone[mid & (x < 0) & low] = 2
+    zone[mid & (x < 0) & ~low] = 3
+    zone[mid & (x >= 0) & ~low] = 4
+    zone[mid & (x >= 0) & low] = 5
+    zone[basic == "Left Corner 3"] = 6
+    atb = basic == "Above the Break 3"
+    zone[atb & (ang >= 108)] = 7
+    zone[atb & (ang >= 72) & (ang < 108)] = 8
+    zone[atb & (ang < 72)] = 9
+    zone[basic == "Right Corner 3"] = 10
+    return zone
+
+
+def _leader_zone_grid(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Same zones as leader_zone_index, from court geometry, for shading the floor."""
+    r = np.hypot(x, y)
+    ang = np.degrees(np.arctan2(y, x))
+    low = np.degrees(np.arctan2(y, np.abs(x))) < _BASELINE_DEG
+    corner = (np.abs(x) >= 220) & (y <= 90)
+    three = corner | (r >= 237.5)
+    rim = ((r <= 40) & (y >= 0)) | ((np.abs(x) <= 40) & (y < 0))
+    paint = (np.abs(x) <= 80) & (y <= 142.5) & ~rim
+
+    zone = np.full(x.shape, -1)
+    mid = ~three & ~rim & ~paint
+    zone[mid & (x < 0) & low] = 2
+    zone[mid & (x < 0) & ~low] = 3
+    zone[mid & (x >= 0) & ~low] = 4
+    zone[mid & (x >= 0) & low] = 5
+    zone[paint] = 1
+    zone[rim] = 0
+    zone[corner & (x < 0)] = 6
+    atb = three & ~corner
+    zone[atb & (ang >= 108)] = 7
+    zone[atb & (ang >= 72) & (ang < 108)] = 8
+    zone[atb & (ang < 72)] = 9
+    zone[corner & (x > 0)] = 10
+    return zone
+
+
+def _short_name(name: str) -> str:
+    return _SHORT_NAMES.get(name, name.split(" ", 1)[-1].upper())
+
+
+def zone_leaders_chart(
+    leaders: pd.DataFrame,
+    headshots: dict,
+    tag: str,
+    season: str,
+    note: str = "",
+    credit: str = "",
+    fig_size: tuple = (9, 16),
+    head_in: float = 1.02,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Portrait half-court split into 11 zones, each showing the headshot of the player
+    with the most made field goals there, plus a leaderboard table underneath.
+
+    Args:
+        leaders:    One row per zone, in _LEADER_ZONES order, with PLAYER_ID,
+                    PLAYER_NAME, TEAM, FGM, FGA, RUNNER_UP, RUNNER_UP_FGM
+        headshots:  PLAYER_ID -> RGBA array
+        tag:        Text for the banner above the title, e.g. "ENTERING NOV 10"
+        season:     Shown top-right, e.g. "2026-27"
+        head_in:    Headshot diameter in inches
+    """
+    from matplotlib.colors import ListedColormap
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.patches import Rectangle
+
+    plt.rcParams["font.family"] = ["Arial", "DejaVu Sans"]
+    fig = plt.figure(figsize=fig_size, facecolor=_TIER_BG)
+
+    # Header
+    fig.patches.append(Rectangle((0.06, 0.948), 0.29, 0.03, transform=fig.transFigure,
+                                 fc=_TIER_ACCENT, ec="none"))
+    fig.text(0.205, 0.963, tag, ha="center", va="center", fontsize=15,
+             fontweight="bold", color="white")
+    fig.text(0.06, 0.905, "WHO OWNS EACH ZONE", ha="left", va="center", fontsize=42,
+             fontweight="bold", color=_TIER_INK)
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.866, 0.866], color="#cfc8ba", lw=1))
+    fig.text(0.065, 0.845, "MOST MADE FIELD GOALS BY ZONE", ha="left", va="center",
+             fontsize=13, fontweight="bold", color=_TIER_INK)
+    fig.text(0.935, 0.845, season, ha="right", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_ACCENT)
+
+    # Court ------------------------------------------------------------------
+    ax_rect = (0.03, 0.405, 0.94, 0.42)
+    xlim = (-285, 285)
+    units_per_in = (xlim[1] - xlim[0]) / (ax_rect[2] * fig_size[0])
+    y_span = units_per_in * ax_rect[3] * fig_size[1]
+    ylim = (-64, -64 + y_span)
+    ax = fig.add_axes(ax_rect)
+    ax.set_facecolor(_TIER_BG)
+
+    top = min(ylim[1], 422.5)
+    gx, gy = np.meshgrid(np.linspace(-250, 250, 1001), np.linspace(-47.5, top, 941))
+    grid = _leader_zone_grid(gx, gy)
+    ax.imshow(grid, extent=(-250, 250, -47.5, top), origin="lower", vmin=0, vmax=10,
+              cmap=ListedColormap([z[1] for z in _LEADER_ZONES]), zorder=1,
+              interpolation="nearest")
+
+    # Background-colored gaps between zones that share a fill
+    gap = dict(color=_TIER_BG, lw=4, zorder=2, solid_capstyle="butt")
+    for deg in (72, 108):
+        rr = np.array([237.5, 480])
+        ax.plot(rr * np.cos(np.radians(deg)), rr * np.sin(np.radians(deg)), **gap)
+    ax.plot([0, 0], [142.5, 237.5], **gap)
+    for side in (-1, 1):
+        ax.plot([side * 220, side * 250], [90, 90], **gap)
+        t = np.radians(_BASELINE_DEG)
+        rr = np.array([80 / np.cos(t), 237.5])
+        ax.plot(side * rr * np.cos(t), rr * np.sin(t), **gap)
+
+    draw_court(ax, color="#8f887a", lw=1.6)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+
+    size = head_in * units_per_in  # headshot diameter in court units
+    for (label, _, (cx, cy), side), (_, row) in zip(_LEADER_ZONES, leaders.iterrows()):
+        img = _circle_headshot(headshots[row["PLAYER_ID"]], _TIER_ACCENT, ring_frac=0.05)
+        ax.add_artist(AnnotationBbox(OffsetImage(img, zoom=head_in * 72 / img.shape[0]),
+                                     (cx, cy), frameon=False, zorder=4))
+        sign, va = (-1, "top") if side == "below" else (1, "bottom")
+        # Double-barrelled surnames go on two lines so they stay inside the frame
+        ax.text(cx, cy + sign * (size / 2 + 3),
+                _short_name(row["PLAYER_NAME"]).replace("-", "-\n"),
+                ha="center", va=va, fontsize=10.5, fontweight="bold", color=_TIER_INK,
+                zorder=5, linespacing=1.0,
+                bbox=dict(boxstyle="round,pad=0.18", fc=_TIER_BG, ec="none", alpha=0.85))
+
+    # Leaderboard ------------------------------------------------------------
+    cols = [(0.065, "left", "ZONE"), (0.335, "left", "LEADER"), (0.655, "right", "FGM"),
+            (0.735, "right", "FG%"), (0.775, "left", "NEXT UP")]
+    top_y, row_h = 0.378, 0.0222
+    for x, ha, head in cols:
+        fig.text(x, top_y, head, ha=ha, va="center", fontsize=10.5, fontweight="bold",
+                 color="#77716a")
+    fig.add_artist(plt.Line2D([0.06, 0.94], [top_y - row_h / 2] * 2, color="#cfc8ba", lw=1))
+    for i, ((label, fill, _, _), (_, row)) in enumerate(zip(_LEADER_ZONES, leaders.iterrows())):
+        y = top_y - row_h * (i + 1)
+        fig.patches.append(Rectangle((0.065, y - 0.006), 0.012, 0.012,
+                                     transform=fig.transFigure, fc=fill, ec="#b9b2a3", lw=0.6))
+        fig.text(0.087, y, label, ha="left", va="center", fontsize=10.5,
+                 fontweight="bold", color=_TIER_INK)
+        fig.text(0.335, y, f"{row['PLAYER_NAME']}  ", ha="left", va="center", fontsize=11.5,
+                 color=_TIER_INK)
+        fig.text(0.655, y, f"{row['FGM']}", ha="right", va="center", fontsize=12,
+                 fontweight="bold", color=_TIER_ACCENT)
+        fig.text(0.735, y, f"{row['FGM'] / row['FGA'] * 100:.0f}%", ha="right", va="center",
+                 fontsize=11.5, color="#6b665d")
+        fig.text(0.775, y, f"{_short_name(row['RUNNER_UP']).title()} {row['RUNNER_UP_FGM']}",
+                 ha="left", va="center", fontsize=10.5, color="#6b665d")
+
+    if note:
+        fig.text(0.065, 0.092, note, ha="left", va="center", fontsize=10.5,
+                 color="#6b665d", linespacing=1.5)
+    fig.text(0.065, 0.05, "SOURCE: NBA.COM/STATS", ha="left", va="center", fontsize=12,
+             fontweight="bold", color="#77716a")
+    if credit:
+        fig.text(0.935, 0.05, credit, ha="right", va="center", fontsize=12,
+                 fontweight="bold", color="#77716a")
+
+    if save_path:
+        fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
+    return fig, ax
