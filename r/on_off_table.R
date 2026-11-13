@@ -6,14 +6,17 @@
 #   Rscript r/on_off_table.R                  # defaults: 2026-27, min 150 minutes, top 10
 #   Rscript r/on_off_table.R 2026-27 200 15
 #   Rscript r/on_off_table.R --rookies        # rookies only, default min 100 minutes
+#   Rscript r/on_off_table.R --rookies --by-minutes   # the 10 rookies with the most minutes,
+#                                                     # ranked by on/off (no minutes floor)
 
 source("r/gt_helpers.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 rookies <- "--rookies" %in% args
-args <- setdiff(args, "--rookies")
+by_minutes <- "--by-minutes" %in% args
+args <- setdiff(args, c("--rookies", "--by-minutes"))
 season <- if (length(args) >= 1) args[1] else "2026-27"
-min_min <- if (length(args) >= 2) as.integer(args[2]) else if (rookies) 100L else 150L
+min_min <- if (length(args) >= 2) as.integer(args[2]) else if (by_minutes) 0L else if (rookies) 100L else 150L
 top_n <- if (length(args) >= 3) as.integer(args[3]) else 10L
 
 path <- sprintf("r/data/on_off_%s.csv", season)
@@ -23,7 +26,9 @@ on_off <- read.csv(path) |>
   ungroup() |>
   filter(MIN_ON >= min_min, !rookies | IS_ROOKIE == 1)
 
-top <- on_off |>
+pool <- if (by_minutes) slice_max(on_off, MIN_ON, n = top_n, with_ties = FALSE) else on_off
+
+top <- pool |>
   arrange(desc(NET_DIFF), desc(MIN_ON)) |>
   slice_head(n = top_n) |>
   mutate(
@@ -53,11 +58,17 @@ on_off_tbl <- top |>
   tab_footnote("Team net rating with player on court minus with player off court.",
                cells_column_labels(NET_DIFF)) |>
   theme_nba_table(
-    if (rookies) "Biggest Rookie On/Off Impact" else "Biggest On/Off Impact",
-    sprintf("Net rating on/off differential · %s regular season · min. %d minutes (%d %s qualify)",
-            season, min_min, nrow(on_off), if (rookies) "rookies" else "players"),
+    if (by_minutes) sprintf("%s On/Off Impact", if (rookies) "Rookie" else "Player")
+    else if (rookies) "Biggest Rookie On/Off Impact" else "Biggest On/Off Impact",
+    if (by_minutes)
+      sprintf("Net rating on/off differential · %s regular season · the %d %s with the most minutes",
+              season, top_n, if (rookies) "rookies" else "players")
+    else
+      sprintf("Net rating on/off differential · %s regular season · min. %d minutes (%d %s qualify)",
+              season, min_min, nrow(on_off), if (rookies) "rookies" else "players"),
     paste0("Data: NBA.com, as of ", data_as_of(path), ". Net rating = points per 100 possessions, ",
            "scored minus allowed. Early-season samples are small and noisy.")
   )
 
-save_table(on_off_tbl, sprintf(if (rookies) "on_off_rookies_%s" else "on_off_%s", season))
+stem <- paste0("on_off", if (rookies) "_rookies" else "", if (by_minutes) "_by_minutes" else "", "_%s")
+save_table(on_off_tbl, sprintf(stem, season))
