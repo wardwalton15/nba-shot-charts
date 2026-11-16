@@ -10,8 +10,10 @@ from nba_api.stats.endpoints import (
     CommonPlayerInfo,
     LeagueDashPlayerPtShot,
     LeagueDashPlayerStats,
+    LeagueDashPtDefend,
     LeagueDashTeamStats,
     LeagueGameFinder,
+    MatchupsRollup,
     PlayByPlayV3,
     ShotChartDetail,
     SynergyPlayTypes,
@@ -531,6 +533,72 @@ def get_dribble_shooting(
     ranged = fetch(dribble_range_nullable=dribble_range).drop(columns=id_cols[1:] + ["AGE", "G"])
     df = total.merge(ranged, on="PLAYER_ID", how="left").fillna(0).rename(columns={
         "PLAYER_LAST_TEAM_ID": "TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
+    save_to_cache(df, path)
+    return df
+
+
+def get_rim_defense(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Player tracking defense on shots within 6 ft, one row per closest defender:
+    defended FGM/FGA (D_FGM, D_FGA), defended FG% (D_FG_PCT), the shooters' normal
+    FG% on those shots (NORMAL_FG_PCT) and the difference (PCT_DIFF).
+    """
+    key = f"rim_defense_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    df = _sleep_and_fetch(
+        LeagueDashPtDefend,
+        season=season,
+        season_type_all_star=season_type,
+        per_mode_simple="Totals",
+        defense_category="Less Than 6Ft",
+        timeout=60,
+    ).get_data_frames()[0].rename(columns={
+        "CLOSE_DEF_PERSON_ID": "PLAYER_ID",
+        "PLAYER_LAST_TEAM_ID": "TEAM_ID",
+        "PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION",
+        "FGM_LT_06": "D_FGM",
+        "FGA_LT_06": "D_FGA",
+        "LT_06_PCT": "D_FG_PCT",
+        "NS_LT_06_PCT": "NORMAL_FG_PCT",
+        "PLUSMINUS": "PCT_DIFF",
+    })
+    save_to_cache(df, path)
+    return df
+
+
+def get_matchup_defense(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Player tracking matchup totals, one row per defender (all positions combined):
+    partial possessions, matchup minutes, and the FGM/FGA and FG3M/FG3A of the
+    players they were guarding. Has no team column.
+    """
+    key = f"matchup_defense_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    df = _sleep_and_fetch(
+        MatchupsRollup,
+        season=season,
+        season_type_playoffs=season_type,
+        per_mode_simple="Totals",
+        timeout=60,
+    ).get_data_frames()[0]
+    df = df[df["POSITION"] == "TOTAL"].drop(columns=["POSITION", "PERCENT_OF_TIME"])
+    df = df.rename(columns={"DEF_PLAYER_ID": "PLAYER_ID", "DEF_PLAYER_NAME": "PLAYER_NAME"})
     save_to_cache(df, path)
     return df
 

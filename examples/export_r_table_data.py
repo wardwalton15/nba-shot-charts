@@ -6,6 +6,8 @@ Export data for the R/gt tables in r/:
                                           plus an IS_ROOKIE flag
   - r/data/dribbles_7plus_<season>.csv    shooting on 7+ dribble FGA, with share of total FGA
   - r/data/usage_change_<season>.csv      usage rate this season vs. last, one row per player
+  - r/data/rim_defense_<season>.csv       defended FG% on shots within 6 ft, per closest defender
+  - r/data/matchup_defense_<season>.csv   opponent FGM/FGA and 3PM/3PA in tracked matchups, per defender
 
 Run from repo root (refreshes the in-progress season):
     .venv/bin/python examples/export_r_table_data.py
@@ -21,7 +23,7 @@ from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 from nba_shot_charts.data.fetcher import (
     _sleep_and_fetch, get_assist_pairs, get_dribble_shooting, get_play_type_stats, get_player_on_off,
-    get_player_scoring,
+    get_matchup_defense, get_player_scoring, get_rim_defense,
 )
 
 OUT_DIR = Path(__file__).parent.parent / "r" / "data"
@@ -101,6 +103,19 @@ def main():
     usage_path = OUT_DIR / f"usage_change_{args.season}.csv"
     usage.sort_values("USG_DIFF", ascending=False).to_csv(usage_path, index=False)
     print(f"Wrote {usage_path} ({len(usage)} players in both {prev_season} and {args.season})")
+
+    rim = get_rim_defense(args.season, args.season_type, refresh=refresh)
+    rim_path = OUT_DIR / f"rim_defense_{args.season}.csv"
+    rim.sort_values("D_FG_PCT").to_csv(rim_path, index=False)
+    print(f"Wrote {rim_path} ({len(rim)} players)")
+
+    # Matchup data has no team column, so take it from the player scoring table
+    matchups = get_matchup_defense(args.season, args.season_type, refresh=refresh)
+    teams = cur[["PLAYER_ID", "TEAM_ID", "TEAM_ABBREVIATION"]]
+    matchup_def = matchups.merge(teams, on="PLAYER_ID", how="left")
+    matchup_path = OUT_DIR / f"matchup_defense_{args.season}.csv"
+    matchup_def.sort_values("MATCHUP_FG_PCT").to_csv(matchup_path, index=False)
+    print(f"Wrote {matchup_path} ({len(matchup_def)} players, {matchup_def['TEAM_ID'].isna().sum()} without a team)")
 
 
 if __name__ == "__main__":
