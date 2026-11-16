@@ -636,22 +636,19 @@ def team_tiers_chart(
     fig.text(0.935, 0.845, "BETTER TEAMS  ↗", ha="right", va="center", fontsize=13,
              fontweight="bold", color=_TIER_ACCENT)
 
-    # Fit the axes to the teams, then widen the tighter axis so a rating point is the
-    # same length both ways (keeps the tier bands at 45°)
+    # Fit each axis to the teams independently so they fill the whole plot. The scales
+    # differ, so the tier bands are steeper than 45° but still exact (net = ORtg - DRtg).
     ax_rect = [0.12, 0.275, 0.82, 0.545]
-    ax_w_in, ax_h_in = ax_rect[2] * fig_size[0], ax_rect[3] * fig_size[1]
-    pad = 2.0
+    ax_in = np.array([ax_rect[2] * fig_size[0], ax_rect[3] * fig_size[1]])
+    pad_in = 0.45  # margin around the outermost logos, in inches
     pts = df[["OFF_RATING", "DEF_RATING"]].to_numpy()
-    mid = (pts.min(axis=0) + pts.max(axis=0)) / 2
-    span = pts.max(axis=0) - pts.min(axis=0) + 2 * pad
-    units_per_in = max(span[0] / ax_w_in, span[1] / ax_h_in)
-    half = units_per_in * np.array([ax_w_in, ax_h_in]) / 2
-    lo, hi = mid - half, mid + half  # per axis: [x, y]
+    data_lo, data_hi = pts.min(axis=0), pts.max(axis=0)
+    units_per_in = (data_hi - data_lo) / (ax_in - 2 * pad_in)  # per axis: [x, y]
+    lo, hi = data_lo - pad_in * units_per_in, data_hi + pad_in * units_per_in
 
     ax = fig.add_axes(ax_rect)
     ax.set_xlim(lo[0], hi[0])
     ax.set_ylim(hi[1], lo[1])  # lower DRtg is better, so it goes on top
-    ax.set_aspect("equal")
     ax.set_facecolor(_TIER_BG)
 
     # Tier bands: net = ORtg - DRtg, so each boundary is the line DRtg = ORtg - bound
@@ -669,11 +666,12 @@ def team_tiers_chart(
             fontsize=9, color="#7d776c")
 
     # Logos, nudged apart where they collide, with a leader line back to the true spot
-    size = logo_in * units_per_in
+    # (spread in inches, since the two axes no longer share a scale)
     anchors = pts
-    placed = _spread_points(anchors, size * 1.08, (lo, hi))
+    placed = _spread_points(anchors / units_per_in, logo_in * 1.08,
+                            (lo / units_per_in, hi / units_per_in)) * units_per_in
     for abbr, (ax0, ay0), (px, py) in zip(df["abbreviation"], anchors, placed):
-        if np.hypot(px - ax0, py - ay0) > size * 0.15:
+        if np.hypot((px - ax0) / units_per_in[0], (py - ay0) / units_per_in[1]) > logo_in * 0.15:
             ax.plot([ax0, px], [ay0, py], color="#77716a", lw=1, zorder=2)
             ax.scatter([ax0], [ay0], s=14, color="#77716a", zorder=2, lw=0)
         img = logos[abbr]
