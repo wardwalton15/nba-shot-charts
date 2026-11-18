@@ -8,6 +8,7 @@ import requests
 from nba_api.stats.endpoints import (
     BoxScoreTraditionalV3,
     CommonPlayerInfo,
+    LeagueDashLineups,
     LeagueDashPlayerPtShot,
     LeagueDashPlayerStats,
     LeagueDashPtDefend,
@@ -599,6 +600,37 @@ def get_matchup_defense(
     ).get_data_frames()[0]
     df = df[df["POSITION"] == "TOTAL"].drop(columns=["POSITION", "PERCENT_OF_TIME"])
     df = df.rename(columns={"DEF_PLAYER_ID": "PLAYER_ID", "DEF_PLAYER_NAME": "PLAYER_NAME"})
+    save_to_cache(df, path)
+    return df
+
+
+def get_two_man_lineups(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Advanced stats for every two-man combination, one row per pair-team: total MIN,
+    POSS, OFF_RATING / DEF_RATING / NET_RATING with both on the court. PLAYER1_ID /
+    PLAYER2_ID are parsed from GROUP_ID ("-id1-id2-").
+    """
+    key = f"two_man_lineups_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    df = _sleep_and_fetch(
+        LeagueDashLineups,
+        season=season,
+        season_type_all_star=season_type,
+        group_quantity=2,
+        measure_type_detailed_defense="Advanced",
+        per_mode_detailed="Totals",
+        timeout=60,
+    ).get_data_frames()[0]
+    ids = df["GROUP_ID"].str.strip("-").str.split("-", expand=True).astype(int)
+    df["PLAYER1_ID"], df["PLAYER2_ID"] = ids[0], ids[1]
     save_to_cache(df, path)
     return df
 

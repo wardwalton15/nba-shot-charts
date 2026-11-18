@@ -8,6 +8,7 @@ Export data for the R/gt tables in r/:
   - r/data/usage_change_<season>.csv      usage rate this season vs. last, one row per player
   - r/data/rim_defense_<season>.csv       defended FG% on shots within 6 ft, per closest defender
   - r/data/matchup_defense_<season>.csv   opponent FGM/FGA and 3PM/3PA in tracked matchups, per defender
+  - r/data/two_man_<season>.csv           net rating with each two-man pair on the court together
 
 Run from repo root (refreshes the in-progress season):
     .venv/bin/python examples/export_r_table_data.py
@@ -23,7 +24,7 @@ from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 from nba_shot_charts.data.fetcher import (
     _sleep_and_fetch, get_assist_pairs, get_dribble_shooting, get_play_type_stats, get_player_on_off,
-    get_matchup_defense, get_player_scoring, get_rim_defense,
+    get_matchup_defense, get_player_scoring, get_rim_defense, get_two_man_lineups,
 )
 
 OUT_DIR = Path(__file__).parent.parent / "r" / "data"
@@ -116,6 +117,18 @@ def main():
     matchup_path = OUT_DIR / f"matchup_defense_{args.season}.csv"
     matchup_def.sort_values("MATCHUP_FG_PCT").to_csv(matchup_path, index=False)
     print(f"Wrote {matchup_path} ({len(matchup_def)} players, {matchup_def['TEAM_ID'].isna().sum()} without a team)")
+
+    # GROUP_NAME abbreviates first names ("D. Fox"), so take full names from the scoring table
+    two_man = get_two_man_lineups(args.season, args.season_type, refresh=refresh)
+    names = cur.set_index("PLAYER_ID")["PLAYER_NAME"]
+    two_man["PLAYER1_NAME"] = two_man["PLAYER1_ID"].map(names)
+    two_man["PLAYER2_NAME"] = two_man["PLAYER2_ID"].map(names)
+    two_man_cols = ["TEAM_ID", "TEAM_ABBREVIATION", "PLAYER1_ID", "PLAYER1_NAME", "PLAYER2_ID", "PLAYER2_NAME",
+                    "GP", "W", "L", "MIN", "POSS", "OFF_RATING", "DEF_RATING", "NET_RATING"]
+    two_man_path = OUT_DIR / f"two_man_{args.season}.csv"
+    two_man[two_man_cols].sort_values("NET_RATING", ascending=False).to_csv(two_man_path, index=False)
+    print(f"Wrote {two_man_path} ({len(two_man)} pairs, "
+          f"{two_man[['PLAYER1_NAME', 'PLAYER2_NAME']].isna().any(axis=1).sum()} with a missing name)")
 
 
 if __name__ == "__main__":
