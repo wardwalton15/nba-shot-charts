@@ -9,12 +9,14 @@ from nba_api.stats.endpoints import (
     BoxScoreTraditionalV3,
     CommonPlayerInfo,
     LeagueDashLineups,
+    LeagueDashPlayerClutch,
     LeagueDashPlayerPtShot,
     LeagueDashPlayerStats,
     LeagueDashPtDefend,
     LeagueDashPtStats,
     LeagueDashTeamStats,
     LeagueGameFinder,
+    LeagueHustleStatsPlayer,
     MatchupsRollup,
     PlayByPlayV3,
     ShotChartDetail,
@@ -131,6 +133,7 @@ def get_team_games(
 
     result = _sleep_and_fetch(
         LeagueGameFinder,
+    LeagueHustleStatsPlayer,
         team_id_nullable=team_id,
         season_nullable=season,
         season_type_nullable=season_type,
@@ -231,6 +234,7 @@ def _get_game_ids(season: str, season_type: str, refresh: bool = False) -> list[
     print(f"Fetching game list for {season} {season_type}...")
     result = _sleep_and_fetch(
         LeagueGameFinder,
+    LeagueHustleStatsPlayer,
         season_nullable=season,
         season_type_nullable=season_type,
         league_id_nullable="00",
@@ -502,18 +506,13 @@ def get_player_on_off(
     return df
 
 
-def get_dribble_shooting(
-    dribble_range: str,
-    season: str,
-    season_type: str,
-    refresh: bool = False,
-) -> pd.DataFrame:
+def _get_pt_shot_split(key: str, season: str, season_type: str, refresh: bool, **split) -> pd.DataFrame:
     """
-    Player tracking shooting totals on shots taken after `dribble_range` dribbles
-    (e.g. "0 Dribbles", "7+ Dribbles"), one row per player, plus TOTAL_FGA across
-    all shots. FGA_FREQUENCY = share of the player's FGA in that dribble range.
+    Player tracking shooting totals for one split of LeagueDashPlayerPtShot (e.g.
+    dribble_range_nullable="7+ Dribbles"), one row per player, joined to the player's
+    totals across all shots (TOTAL_FGA, TOTAL_FG3M, TOTAL_FG3A). Players with no
+    shots in the split appear as zeros.
     """
-    key = f"pt_shot_{dribble_range.replace(' ', '_').replace('+', 'plus')}_{season}_{season_type.replace(' ', '_')}"
     path = cache_path(key)
     cached = None if refresh else load_from_cache(path)
     if cached is not None:
@@ -529,12 +528,97 @@ def get_dribble_shooting(
             **kwargs,
         ).get_data_frames()[0]
 
-    # Start from all shots so players with no shots in the range still appear (as zeros)
     id_cols = ["PLAYER_ID", "PLAYER_NAME", "PLAYER_LAST_TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION", "GP"]
-    total = fetch()[id_cols + ["FGA"]].rename(columns={"FGA": "TOTAL_FGA"})
-    ranged = fetch(dribble_range_nullable=dribble_range).drop(columns=id_cols[1:] + ["AGE", "G"])
+    total = fetch()[id_cols + ["FGA", "FG3M", "FG3A"]].rename(
+        columns={"FGA": "TOTAL_FGA", "FG3M": "TOTAL_FG3M", "FG3A": "TOTAL_FG3A"})
+    ranged = fetch(**split).drop(columns=id_cols[1:] + ["AGE", "G"])
     df = total.merge(ranged, on="PLAYER_ID", how="left").fillna(0).rename(columns={
         "PLAYER_LAST_TEAM_ID": "TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
+    save_to_cache(df, path)
+    return df
+
+
+def get_dribble_shooting(
+    dribble_range: str,
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Player tracking shooting totals on shots taken after `dribble_range` dribbles
+    (e.g. "0 Dribbles", "7+ Dribbles"), one row per player, plus TOTAL_FGA across
+    all shots. FGA_FREQUENCY = share of the player's FGA in that dribble range.
+    """
+    key = f"pt_shot_{dribble_range.replace(' ', '_').replace('+', 'plus')}_{season}_{season_type.replace(' ', '_')}"
+    return _get_pt_shot_split(key, season, season_type, refresh, dribble_range_nullable=dribble_range)
+
+
+def get_wide_open_shooting(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Player tracking shooting totals on wide-open shots (closest defender 6+ ft away),
+    one row per player: FGM/FGA, FG3M/FG3A, FG3_PCT, plus the player's TOTAL_FG3M /
+    TOTAL_FG3A across all shots.
+    """
+    key = f"pt_shot_wide_open_{season}_{season_type.replace(' ', '_')}"
+    return _get_pt_shot_split(key, season, season_type, refresh,
+                              close_def_dist_range_nullable="6+ Feet - Wide Open")
+
+
+def get_clutch_stats(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Box-score totals in clutch time (last 5 minutes, score within 5 points), one
+    row per player: GP, MIN, FGM/FGA, FG3M/FG3A, FTM/FTA, PTS, PLUS_MINUS, ...
+    """
+    key = f"clutch_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    df = _sleep_and_fetch(
+        LeagueDashPlayerClutch,
+        season=season,
+        season_type_all_star=season_type,
+        per_mode_detailed="Totals",
+        clutch_time="Last 5 Minutes",
+        ahead_behind="Ahead or Behind",
+        point_diff=5,
+        timeout=60,
+    ).get_data_frames()[0]
+    save_to_cache(df, path)
+    return df
+
+
+def get_hustle_stats(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Hustle stat totals, one row per player: G, MIN, DEFLECTIONS, CONTESTED_SHOTS,
+    CHARGES_DRAWN, LOOSE_BALLS_RECOVERED, SCREEN_ASSISTS, BOX_OUTS, ...
+    """
+    key = f"hustle_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    df = _sleep_and_fetch(
+        LeagueHustleStatsPlayer,
+        season=season,
+        season_type_all_star=season_type,
+        per_mode_time="Totals",
+        timeout=60,
+    ).get_data_frames()[0]
     save_to_cache(df, path)
     return df
 
@@ -652,6 +736,7 @@ def get_two_man_lineups(
 
     df = _sleep_and_fetch(
         LeagueDashLineups,
+    LeagueDashPlayerClutch,
         season=season,
         season_type_all_star=season_type,
         group_quantity=2,

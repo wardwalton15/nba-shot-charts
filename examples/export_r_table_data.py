@@ -10,6 +10,10 @@ Export data for the R/gt tables in r/:
   - r/data/rim_defense_<season>.csv       defended FG% on shots within 6 ft, per closest defender
   - r/data/matchup_defense_<season>.csv   opponent FGM/FGA and 3PM/3PA in tracked matchups, per defender
   - r/data/two_man_<season>.csv           net rating with each two-man pair on the court together
+  - r/data/isolation_<season>.csv         Synergy isolation totals per player
+  - r/data/clutch_<season>.csv            box-score totals in clutch time (last 5 min, within 5 pts)
+  - r/data/wide_open_<season>.csv         shooting with no defender within 6 ft, plus all-shot 3PM/3PA
+  - r/data/hustle_<season>.csv            hustle totals (deflections etc.) joined with steals
 
 Run from repo root (refreshes the in-progress season):
     .venv/bin/python examples/export_r_table_data.py
@@ -24,8 +28,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 from nba_shot_charts.data.fetcher import (
-    _sleep_and_fetch, get_assist_pairs, get_dribble_shooting, get_play_type_stats, get_player_on_off,
-    get_matchup_defense, get_player_scoring, get_possession_tracking, get_rim_defense, get_two_man_lineups,
+    _sleep_and_fetch, get_assist_pairs, get_clutch_stats, get_dribble_shooting, get_hustle_stats,
+    get_play_type_stats, get_player_on_off, get_matchup_defense, get_player_scoring,
+    get_possession_tracking, get_rim_defense, get_two_man_lineups, get_wide_open_shooting,
 )
 
 OUT_DIR = Path(__file__).parent.parent / "r" / "data"
@@ -135,6 +140,29 @@ def main():
     two_man[two_man_cols].sort_values("NET_RATING", ascending=False).to_csv(two_man_path, index=False)
     print(f"Wrote {two_man_path} ({len(two_man)} pairs, "
           f"{two_man[['PLAYER1_NAME', 'PLAYER2_NAME']].isna().any(axis=1).sum()} with a missing name)")
+
+
+    iso = get_play_type_stats("Isolation", args.season, args.season_type, refresh=refresh)
+    iso_path = OUT_DIR / f"isolation_{args.season}.csv"
+    iso.sort_values("PPP", ascending=False).to_csv(iso_path, index=False)
+    print(f"Wrote {iso_path} ({len(iso)} players)")
+
+    clutch = get_clutch_stats(args.season, args.season_type, refresh=refresh)
+    clutch_path = OUT_DIR / f"clutch_{args.season}.csv"
+    clutch.sort_values("PTS", ascending=False).to_csv(clutch_path, index=False)
+    print(f"Wrote {clutch_path} ({len(clutch)} players)")
+
+    wide_open = get_wide_open_shooting(args.season, args.season_type, refresh=refresh)
+    wide_open_path = OUT_DIR / f"wide_open_{args.season}.csv"
+    wide_open.sort_values("FG3_PCT", ascending=False).to_csv(wide_open_path, index=False)
+    print(f"Wrote {wide_open_path} ({len(wide_open)} players)")
+
+    # Hustle data has no steals, so take them from the player scoring table
+    hustle = get_hustle_stats(args.season, args.season_type, refresh=refresh)
+    hustle = hustle.merge(cur[["PLAYER_ID", "STL"]], on="PLAYER_ID", how="left")
+    hustle_path = OUT_DIR / f"hustle_{args.season}.csv"
+    hustle.sort_values("DEFLECTIONS", ascending=False).to_csv(hustle_path, index=False)
+    print(f"Wrote {hustle_path} ({len(hustle)} players, {hustle['STL'].isna().sum()} without steals)")
 
 
 if __name__ == "__main__":
