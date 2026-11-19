@@ -5,6 +5,7 @@ Export data for the R/gt tables in r/:
   - r/data/on_off_<season>.csv            team net rating with each player on / off court,
                                           plus an IS_ROOKIE flag
   - r/data/dribbles_7plus_<season>.csv    shooting on 7+ dribble FGA, with share of total FGA
+  - r/data/possessions_<season>.csv       touches and per-touch dribbles / seconds / points
   - r/data/usage_change_<season>.csv      usage rate this season vs. last, one row per player
   - r/data/rim_defense_<season>.csv       defended FG% on shots within 6 ft, per closest defender
   - r/data/matchup_defense_<season>.csv   opponent FGM/FGA and 3PM/3PA in tracked matchups, per defender
@@ -24,7 +25,7 @@ from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 from nba_shot_charts.data.fetcher import (
     _sleep_and_fetch, get_assist_pairs, get_dribble_shooting, get_play_type_stats, get_player_on_off,
-    get_matchup_defense, get_player_scoring, get_rim_defense, get_two_man_lineups,
+    get_matchup_defense, get_player_scoring, get_possession_tracking, get_rim_defense, get_two_man_lineups,
 )
 
 OUT_DIR = Path(__file__).parent.parent / "r" / "data"
@@ -92,6 +93,11 @@ def main():
     dribbles_path = OUT_DIR / f"dribbles_7plus_{args.season}.csv"
     dribbles.sort_values("FGA_FREQUENCY", ascending=False).to_csv(dribbles_path, index=False)
     print(f"Wrote {dribbles_path} ({len(dribbles)} players)")
+
+    poss = get_possession_tracking(args.season, args.season_type, refresh=refresh)
+    poss_path = OUT_DIR / f"possessions_{args.season}.csv"
+    poss.sort_values("AVG_DRIB_PER_TOUCH", ascending=False).to_csv(poss_path, index=False)
+    print(f"Wrote {poss_path} ({len(poss)} players)")
 
     start = int(args.season[:4]) - 1
     prev_season = f"{start}-{str(start + 1)[2:]}"

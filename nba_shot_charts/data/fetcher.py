@@ -12,6 +12,7 @@ from nba_api.stats.endpoints import (
     LeagueDashPlayerPtShot,
     LeagueDashPlayerStats,
     LeagueDashPtDefend,
+    LeagueDashPtStats,
     LeagueDashTeamStats,
     LeagueGameFinder,
     MatchupsRollup,
@@ -534,6 +535,35 @@ def get_dribble_shooting(
     ranged = fetch(dribble_range_nullable=dribble_range).drop(columns=id_cols[1:] + ["AGE", "G"])
     df = total.merge(ranged, on="PLAYER_ID", how="left").fillna(0).rename(columns={
         "PLAYER_LAST_TEAM_ID": "TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
+    save_to_cache(df, path)
+    return df
+
+
+def get_possession_tracking(
+    season: str,
+    season_type: str,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Player tracking touch totals, one row per player: TOUCHES, TIME_OF_POSS, and
+    per-touch averages (AVG_DRIB_PER_TOUCH, AVG_SEC_PER_TOUCH, PTS_PER_TOUCH), plus
+    elbow / post / paint touch counts.
+    """
+    key = f"possessions_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    df = _sleep_and_fetch(
+        LeagueDashPtStats,
+        season=season,
+        season_type_all_star=season_type,
+        per_mode_simple="Totals",
+        player_or_team="Player",
+        pt_measure_type="Possessions",
+        timeout=60,
+    ).get_data_frames()[0]
     save_to_cache(df, path)
     return df
 
