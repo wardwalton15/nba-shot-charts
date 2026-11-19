@@ -2,6 +2,7 @@ import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_league_averages, get_league_shots, get_player_headshot, get_player_id,
                            get_player_scoring, get_shot_chart,
@@ -10,7 +11,7 @@ from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_l
 from .plotter import (efficiency_diff_chart, freq_diff_chart, game_shot_card, hexbin_shot_chart,
                       mystery_shot_card,
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
-                      pace_three_rate_chart, team_tiers_chart, three_point_zone_chart, three_rate_chart,
+                      pace_three_rate_chart, scoring_breakdown_chart, team_tiers_chart, three_point_zone_chart, three_rate_chart,
                       volume_efficiency_chart)
 from .plotter import leader_zone_index
 from .plotter import zone_leaders_chart as plotter_zone_leaders_chart
@@ -582,6 +583,74 @@ def zone_leaders_chart(
 
     fig, ax = plotter_zone_leaders_chart(leaders, headshots, tag, season, note=note,
                                          credit=credit, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def team_leading_scorer_breakdown_chart(
+    season: str,
+    season_type: str = "Regular Season",
+    min_games_frac: float = 0.7,
+    as_of: datetime.date | None = None,
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Each team's qualified leading scorer, with points per game split into paint 2s,
+    mid-range 2s, 3s and free throws. Team logo at one end of the bar, headshot at
+    the other.
+
+    Args:
+        season:         NBA season string, e.g. "2026-27"
+        season_type:    "Regular Season" or "Playoffs"
+        min_games_frac: Share of his team's games a player must appear in to qualify
+                        (the NBA's stat-leader rule is 70%)
+        as_of:          Date for the "ENTERING ..." banner; defaults to today
+        credit:         Byline in the bottom-right corner
+        refresh:        Re-fetch instead of using the cache (use for an in-progress season)
+        save_path:      File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    players = get_player_scoring(season, season_type, refresh=refresh)
+    team_gp = get_team_shooting(season, season_type, refresh=refresh)[["TEAM_ID", "GP", "abbreviation"]]
+    df = players.merge(team_gp.rename(columns={"GP": "TEAM_GP"}), on="TEAM_ID")
+    df = df[df["GP"] >= np.ceil(min_games_frac * df["TEAM_GP"])].copy()
+    df["PPG"] = df["PTS"] / df["GP"]
+    df = (df.sort_values("PPG", ascending=False).groupby("TEAM_ID").head(1)
+          .reset_index(drop=True))
+
+    # Split made 2s by zone from the league shot log
+    shots = get_league_shots(season, season_type, refresh=refresh)
+    made2 = shots[(shots["SHOT_MADE_FLAG"] == 1) & (shots["SHOT_TYPE"] == "2PT Field Goal")]
+    paint = made2["SHOT_ZONE_BASIC"].isin(["Restricted Area", "In The Paint (Non-RA)"])
+    zones = pd.DataFrame({
+        "PAINT_FGM": paint.groupby(made2["PLAYER_ID"]).sum(),
+        "TWO_FGM": made2.groupby("PLAYER_ID").size(),
+    })
+    df = df.join(zones, on="PLAYER_ID")
+    df[["PAINT_FGM", "TWO_FGM"]] = df[["PAINT_FGM", "TWO_FGM"]].fillna(0)
+    # Box-score 2s are the source of truth; anything the shot log misses counts as mid-range
+    box2 = df["FGM"] - df["FG3M"]
+    df["PAINT_PPG"] = 2 * df["PAINT_FGM"].clip(upper=box2) / df["GP"]
+    df["MID_PPG"] = 2 * box2 / df["GP"] - df["PAINT_PPG"]
+    df["THREE_PPG"] = 3 * df["FG3M"] / df["GP"]
+    df["FT_PPG"] = df["FTM"] / df["GP"]
+
+    logos = {abbr: get_team_logo(abbr) for abbr in df["abbreviation"]}
+    headshots = {pid: get_player_headshot(pid) for pid in df["PLAYER_ID"]}
+
+    as_of = as_of or datetime.date.today()
+    tag = f"ENTERING {as_of.strftime('%b').upper()} {as_of.day}"
+    note = (f"{season} {season_type.lower()}. Qualified = played in at least"
+            f" {min_games_frac:.0%} of his team's games.\n"
+            "Paint = restricted area + rest of the paint. Mid-range = 2s outside the paint.")
+
+    fig, ax = scoring_breakdown_chart(df, logos, headshots, tag, note=note, credit=credit,
+                                      save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax

@@ -1520,3 +1520,133 @@ def zone_leaders_chart(
     if save_path:
         fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
     return fig, ax
+
+
+# --- Scoring breakdown (9:16) -------------------------------------------------
+
+# (column, legend label, fill, label ink), drawn left to right from the logo outward
+_SCORING_SEGMENTS = [
+    ("PAINT_PPG", "PAINT 2s", "#1f8a5a", "white"),
+    ("MID_PPG", "MID-RANGE 2s", "#d4952a", _TIER_INK),
+    ("THREE_PPG", "3s", "#2f6fb3", "white"),
+    ("FT_PPG", "FREE THROWS", "#c4523a", "white"),
+]
+
+
+def scoring_breakdown_chart(
+    df: pd.DataFrame,
+    logos: dict,
+    headshots: dict,
+    tag: str,
+    title: str = "HOW THEY SCORE",
+    subtitle: str = "EACH TEAM'S LEADING SCORER",
+    note: str = "",
+    credit: str = "",
+    fig_size: tuple = (9, 16),
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Portrait stacked horizontal bars: one row per player, points per game split into
+    paint 2s, mid-range 2s, 3s and free throws. Team logo before each bar, circular
+    headshot at its end, then PPG and name.
+
+    Args:
+        df:        Rows in display order with abbreviation, PLAYER_ID, PLAYER_NAME, PPG
+                   and the per-game columns in _SCORING_SEGMENTS
+        logos:     abbreviation -> RGBA array
+        headshots: PLAYER_ID -> RGBA array (NBA CDN 1040x760)
+        tag:       Text for the banner above the title, e.g. "ENTERING NOV 19"
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.patches import Rectangle
+
+    plt.rcParams["font.family"] = ["Arial", "DejaVu Sans"]
+    fig = plt.figure(figsize=fig_size, facecolor=_TIER_BG)
+
+    # Header
+    fig.patches.append(Rectangle((0.06, 0.948), 0.29, 0.03, transform=fig.transFigure,
+                                 fc=_TIER_ACCENT, ec="none"))
+    fig.text(0.205, 0.963, tag, ha="center", va="center", fontsize=15,
+             fontweight="bold", color="white")
+    fig.text(0.06, 0.905, title, ha="left", va="center", fontsize=44,
+             fontweight="bold", color=_TIER_INK)
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.866, 0.866], color="#cfc8ba", lw=1))
+    fig.text(0.065, 0.848, subtitle, ha="left", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_INK)
+    fig.text(0.935, 0.848, "POINTS PER GAME", ha="right", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_ACCENT)
+
+    # Legend: swatch + label, spaced by label width
+    for x, (_, label, fill, _) in zip((0.065, 0.27, 0.515, 0.625), _SCORING_SEGMENTS):
+        fig.patches.append(Rectangle((x, 0.818), 0.022, 0.0115, transform=fig.transFigure,
+                                     fc=fill, ec="none"))
+        fig.text(x + 0.03, 0.8238, label, ha="left", va="center", fontsize=11.5,
+                 fontweight="bold", color="#4a463f")
+
+    # Rows
+    ax_rect = [0.04, 0.13, 0.92, 0.675]
+    ax_w_in, ax_h_in = ax_rect[2] * fig_size[0], ax_rect[3] * fig_size[1]
+    n = len(df)
+    row_in = ax_h_in / n
+    logo_space_in, tail_in = 0.5, 2.3  # room before the bar and after its end
+    bar_in = ax_w_in - logo_space_in - tail_in
+    ppg_max = df["PPG"].max()
+    per_in = ppg_max / bar_in  # PPG per inch
+    xlo, xhi = -logo_space_in * per_in, ppg_max + tail_in * per_in
+
+    ax = fig.add_axes(ax_rect)
+    ax.set_xlim(xlo, xhi)
+    ax.set_ylim(n - 0.5, -0.5)
+    ax.set_facecolor(_TIER_BG)
+    ax.axis("off")
+
+    for v in range(10, int(ppg_max) + 1, 10):
+        ax.axvline(v, color="#e4ded2", lw=0.8, zorder=0)
+        ax.text(v, n - 0.5 + 0.15, f"{v}", ha="center", va="top", fontsize=10,
+                color="#9a9488")
+    ax.axvline(0, color="#cfc8ba", lw=1, zorder=0)
+
+    bar_h = 0.66
+    shot_in = min(row_in * 0.95, 0.42)
+    logo_in = min(row_in * 0.8, 0.34)
+    for i, row in enumerate(df.itertuples(index=False)):
+        left = 0.0
+        for col, _, fill, ink in _SCORING_SEGMENTS:
+            w = getattr(row, col)
+            ax.barh(i, w, left=left, height=bar_h, color=fill, ec=_TIER_BG, lw=1.2, zorder=2)
+            if w / per_in >= 0.3:
+                ax.text(left + w / 2, i, f"{w:.1f}", ha="center", va="center", fontsize=8.5,
+                        fontweight="bold", color=ink, zorder=3)
+            left += w
+
+        img = logos[row.abbreviation]
+        ax.add_artist(AnnotationBbox(
+            OffsetImage(img, zoom=logo_in * 72 / max(img.shape[:2])),
+            (xlo + logo_space_in * per_in * 0.45, i), frameon=False, zorder=3))
+
+        shot_x = left + (0.08 + shot_in / 2) * per_in
+        face = _circle_headshot(headshots[row.PLAYER_ID], "#cfc8ba", ring_frac=0.05)
+        ax.add_artist(AnnotationBbox(
+            OffsetImage(face, zoom=shot_in * 72 / face.shape[0]),
+            (shot_x, i), frameon=False, zorder=4))
+
+        text_x = shot_x + (shot_in / 2 + 0.08) * per_in
+        ppg = ax.text(text_x, i, f"{row.PPG:.1f}", ha="left", va="center", fontsize=14,
+                      fontweight="bold", color=_TIER_INK, zorder=3)
+        name = _SHORT_NAMES.get(row.PLAYER_NAME, row.PLAYER_NAME).upper()
+        ax.annotate(name, xy=(1, 0.5), xycoords=ppg, xytext=(6, 0),
+                    textcoords="offset points", ha="left", va="center", fontsize=9.5,
+                    fontweight="bold", color="#6b665d")
+
+    if note:
+        fig.text(0.065, 0.085, note, ha="left", va="center", fontsize=10.5,
+                 color="#6b665d", linespacing=1.5)
+    fig.text(0.065, 0.035, "SOURCE: NBA.COM/STATS", ha="left", va="center", fontsize=12,
+             fontweight="bold", color="#77716a")
+    if credit:
+        fig.text(0.935, 0.035, credit, ha="right", va="center", fontsize=12,
+                 fontweight="bold", color="#77716a")
+
+    if save_path:
+        fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
+    return fig, ax
