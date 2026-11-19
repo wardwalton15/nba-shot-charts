@@ -1199,6 +1199,126 @@ def three_rate_chart(
     return fig, ax
 
 
+def pace_three_rate_chart(
+    df: pd.DataFrame,
+    logos: dict,
+    league_pace: float,
+    league_rate: float,
+    tag: str,
+    note: str = "",
+    credit: str = "",
+    fig_size: tuple = (9, 16),
+    logo_in: float = 0.5,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Portrait pace vs. 3-point attempt rate scatter with team logos as markers and
+    dashed league-average lines splitting it into quadrants.
+
+    Args:
+        df:           Rows with abbreviation, PACE, FG3A_RATE (fraction)
+        logos:        abbreviation -> RGBA array
+        league_pace:  League possessions per 48 minutes
+        league_rate:  League 3PA / FGA (fraction)
+        tag:          Text for the banner above the title, e.g. "ENTERING NOV 18"
+        logo_in:      Logo size in inches
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.patches import Rectangle
+
+    plt.rcParams["font.family"] = ["Arial", "DejaVu Sans"]
+    fig = plt.figure(figsize=fig_size, facecolor=_TIER_BG)
+
+    # Header
+    fig.patches.append(Rectangle((0.06, 0.948), 0.29, 0.03, transform=fig.transFigure,
+                                 fc=_TIER_ACCENT, ec="none"))
+    fig.text(0.205, 0.963, tag, ha="center", va="center", fontsize=15,
+             fontweight="bold", color="white")
+    fig.text(0.06, 0.905, "PACE & SPACE", ha="left", va="center", fontsize=44,
+             fontweight="bold", color=_TIER_INK)
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.866, 0.866], color="#cfc8ba", lw=1))
+    fig.text(0.065, 0.845, "NBA TEAMS", ha="left", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_INK)
+    fig.text(0.935, 0.845, "FASTER & MORE THREES  ↗", ha="right", va="center",
+             fontsize=13, fontweight="bold", color=_TIER_ACCENT)
+
+    pace = df["PACE"].to_numpy()
+    rate = df["FG3A_RATE"].to_numpy() * 100
+    league_rate *= 100
+
+    ax_rect = [0.12, 0.215, 0.82, 0.605]
+    ax_w_in, ax_h_in = ax_rect[2] * fig_size[0], ax_rect[3] * fig_size[1]
+    xpad = (pace.max() - pace.min()) * 0.12
+    ypad = (rate.max() - rate.min()) * 0.12
+    xlo, xhi = pace.min() - xpad, pace.max() + xpad
+    ylo, yhi = rate.min() - ypad * 1.6, rate.max() + ypad * 1.6  # room for corner captions
+    ax = fig.add_axes(ax_rect)
+    ax.set_xlim(xlo, xhi)
+    ax.set_ylim(ylo, yhi)
+    ax.set_facecolor(_TIER_BG)
+
+    dx, dy = (xhi - xlo) * 0.015, (yhi - ylo) * 0.01
+    corner = dict(fontsize=11, fontweight="bold", alpha=0.75)
+    ax.text(xhi - dx, yhi - dy, "RUN & GUN", ha="right", va="top",
+            color=_TIER_ACCENT, **corner)
+    ax.text(xlo + dx, yhi - dy, "PATIENT BOMBERS", ha="left", va="top",
+            color="#5b6b3a", **corner)
+    ax.text(xhi - dx, ylo + dy, "RUN TO THE RIM", ha="right", va="bottom",
+            color="#8a6236", **corner)
+    ax.text(xlo + dx, ylo + dy, "GRIND IT OUT", ha="left", va="bottom",
+            color="#9a4a48", **corner)
+
+    ax.axvline(league_pace, color="#9a9488", lw=1, ls=(0, (4, 4)), zorder=1)
+    ax.axhline(league_rate, color="#9a9488", lw=1, ls=(0, (4, 4)), zorder=1)
+    ax.text(league_pace + dx * 0.6, yhi - dy * 6, f"LG AVG {league_pace:.1f}", ha="left",
+            va="top", fontsize=9, color="#7d776c", rotation=90)
+    ax.text(xlo + dx, league_rate + dy * 0.5, f"LG AVG {league_rate:.1f}%", ha="left",
+            va="bottom", fontsize=9, color="#7d776c")
+
+    # Logos in inch space so the collision spacing is round; leader line to true spot
+    x_per_in, y_per_in = (xhi - xlo) / ax_w_in, (yhi - ylo) / ax_h_in
+    anchors = np.c_[pace / x_per_in, rate / y_per_in]
+    placed = _spread_points(anchors, logo_in * 1.08,
+                            (np.array([xlo / x_per_in, ylo / y_per_in]),
+                             np.array([xhi / x_per_in, yhi / y_per_in])))
+    for abbr, (ax0, ay0), (px, py) in zip(df["abbreviation"], anchors, placed):
+        a = (ax0 * x_per_in, ay0 * y_per_in)
+        p = (px * x_per_in, py * y_per_in)
+        if np.hypot(px - ax0, py - ay0) > logo_in * 0.15:
+            ax.plot([a[0], p[0]], [a[1], p[1]], color="#77716a", lw=1, zorder=2)
+            ax.scatter([a[0]], [a[1]], s=14, color="#77716a", zorder=2, lw=0)
+        img = logos[abbr]
+        zoom = logo_in * 72 / max(img.shape[:2])
+        ax.add_artist(AnnotationBbox(OffsetImage(img, zoom=zoom), p,
+                                     frameon=False, zorder=3))
+
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(6, integer=True))
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(7, integer=True))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+    ax.tick_params(length=0, labelsize=12, labelcolor="#6b665d", pad=8)
+    ax.grid(color="#e4ded2", lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_color("#cfc8ba")
+    ax.set_xlabel("PACE (POSSESSIONS PER 48 MIN)  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+    ax.set_ylabel("3PT ATTEMPT RATE (3PA / FGA)  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+
+    if note:
+        fig.text(0.065, 0.12, note, ha="left", va="center", fontsize=10.5,
+                 color="#6b665d", linespacing=1.5)
+    fig.text(0.065, 0.05, "SOURCE: NBA.COM/STATS", ha="left", va="center", fontsize=12,
+             fontweight="bold", color="#77716a")
+    if credit:
+        fig.text(0.935, 0.05, credit, ha="right", va="center", fontsize=12,
+                 fontweight="bold", color="#77716a")
+
+    if save_path:
+        fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
+    return fig, ax
+
+
 # --- Zone leaders (9:16) ------------------------------------------------------
 
 # (label, fill, headshot center, label side). The fill groups zones by shot type.
