@@ -6,12 +6,12 @@ import pandas as pd
 
 from .data.fetcher import (get_assist_shots, get_game_box, get_game_shots, get_league_averages, get_league_shots, get_player_headshot, get_player_id,
                            get_player_scoring, get_shot_chart,
-                           get_team_games, get_team_id, get_team_logo, get_team_ratings,
+                           get_team_games, get_team_id, get_team_logo, get_team_ratings, get_team_scoring_runs,
                            get_team_shooting, get_team_shot_chart)
 from .plotter import (efficiency_diff_chart, freq_diff_chart, game_shot_card, hexbin_shot_chart,
                       mystery_shot_card,
                       scatter_shot_chart, smooth_efficiency_diff_chart, smooth_freq_diff_chart,
-                      pace_three_rate_chart, scoring_breakdown_chart, team_tiers_chart, three_point_zone_chart, three_rate_chart,
+                      pace_three_rate_chart, scoring_breakdown_chart, scoring_runs_chart, team_tiers_chart, three_point_zone_chart, three_rate_chart,
                       volume_efficiency_chart)
 from .plotter import leader_zone_index
 from .plotter import zone_leaders_chart as plotter_zone_leaders_chart
@@ -526,6 +526,52 @@ def team_pace_three_rate_chart(
 
     fig, ax = pace_three_rate_chart(df, logos, league_pace, league_rate, tag, note=note,
                                     credit=credit, save_path=save_path)
+    if save_path is None:
+        plt.show()
+    return fig, ax
+
+
+def team_scoring_runs_chart(
+    season: str,
+    season_type: str = "Regular Season",
+    min_run: int = 10,
+    as_of: datetime.date | None = None,
+    credit: str = "",
+    refresh: bool = False,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Every team's min_run-0 (or bigger) scoring runs made vs. allowed per game, counted
+    from play-by-play, team logos as markers.
+
+    Args:
+        season:      NBA season string, e.g. "2026-27"
+        season_type: "Regular Season" or "Playoffs"
+        min_run:     Unanswered points needed to count as a run
+        as_of:       Date for the "ENTERING ..." banner; defaults to today
+        credit:      Byline in the bottom-right corner
+        refresh:     Re-fetch the game list (new games' PBP is fetched, old games stay cached)
+        save_path:   File path to save PNG; if None, calls plt.show()
+
+    Returns:
+        (fig, ax)
+    """
+    df = get_team_scoring_runs(season, season_type, min_run=min_run, refresh=refresh).copy()
+    df["RUNS_FOR_PG"] = df["RUNS_FOR"] / df["GP"]
+    df["RUNS_AGAINST_PG"] = df["RUNS_AGAINST"] / df["GP"]
+    logos = {abbr: get_team_logo(abbr) for abbr in df["abbreviation"]}
+    league_avg = df["RUNS_FOR"].sum() / df["GP"].sum()
+
+    as_of = as_of or datetime.date.today()
+    tag = f"ENTERING {as_of.strftime('%b').upper()} {as_of.day}"
+    gp_lo, gp_hi = int(df["GP"].min()), int(df["GP"].max())
+    games = f"{gp_lo}" if gp_lo == gp_hi else f"{gp_lo}–{gp_hi}"
+    note = (f"{season} {season_type.lower()} ({games} games per team).\n"
+            f"A run = {min_run}+ straight points before the opponent scores,\n"
+            "carried across quarter breaks. Dashed lines = league average.")
+
+    fig, ax = scoring_runs_chart(df, logos, league_avg, tag, min_run=min_run, note=note,
+                                 credit=credit, save_path=save_path)
     if save_path is None:
         plt.show()
     return fig, ax

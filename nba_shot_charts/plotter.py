@@ -1319,6 +1319,122 @@ def pace_three_rate_chart(
     return fig, ax
 
 
+def scoring_runs_chart(
+    df: pd.DataFrame,
+    logos: dict,
+    league_avg: float,
+    tag: str,
+    min_run: int = 10,
+    note: str = "",
+    credit: str = "",
+    fig_size: tuple = (9, 16),
+    logo_in: float = 0.5,
+    save_path: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Portrait scatter of scoring runs made (x) vs. allowed (y, inverted so fewer allowed is
+    up), both per game, team logos as markers, dashed lines at the league average.
+
+    Args:
+        df:          Rows with abbreviation, RUNS_FOR_PG, RUNS_AGAINST_PG
+        logos:       abbreviation -> RGBA array
+        league_avg:  League runs per team-game (same value for made and allowed)
+        tag:         Text for the banner above the title, e.g. "ENTERING NOV 19"
+        min_run:     Run threshold, used in the title and axis labels
+        logo_in:     Logo size in inches
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    from matplotlib.patches import Rectangle
+
+    plt.rcParams["font.family"] = ["Arial", "DejaVu Sans"]
+    fig = plt.figure(figsize=fig_size, facecolor=_TIER_BG)
+
+    # Header
+    fig.patches.append(Rectangle((0.06, 0.948), 0.29, 0.03, transform=fig.transFigure,
+                                 fc=_TIER_ACCENT, ec="none"))
+    fig.text(0.205, 0.963, tag, ha="center", va="center", fontsize=15,
+             fontweight="bold", color="white")
+    fig.text(0.06, 0.905, f"{min_run}-0 RUNS", ha="left", va="center", fontsize=46,
+             fontweight="bold", color=_TIER_INK)
+    fig.add_artist(plt.Line2D([0.06, 0.94], [0.866, 0.866], color="#cfc8ba", lw=1))
+    fig.text(0.065, 0.845, "PER GAME", ha="left", va="center", fontsize=13,
+             fontweight="bold", color=_TIER_INK)
+    fig.text(0.935, 0.845, "MORE RUNS, FEWER ALLOWED  ↗", ha="right", va="center",
+             fontsize=13, fontweight="bold", color=_TIER_ACCENT)
+
+    ax_rect = [0.12, 0.215, 0.82, 0.605]
+    ax_in = np.array([ax_rect[2] * fig_size[0], ax_rect[3] * fig_size[1]])
+    pad_in = np.array([0.45, 0.7])  # extra vertical room for the corner captions
+    pts = df[["RUNS_FOR_PG", "RUNS_AGAINST_PG"]].to_numpy()
+    data_lo, data_hi = pts.min(axis=0), pts.max(axis=0)
+    units_per_in = (data_hi - data_lo) / (ax_in - 2 * pad_in)
+    lo, hi = data_lo - pad_in * units_per_in, data_hi + pad_in * units_per_in
+
+    ax = fig.add_axes(ax_rect)
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(hi[1], lo[1])  # fewer runs allowed is better, so it goes on top
+    ax.set_facecolor(_TIER_BG)
+
+    dx, dy = (hi[0] - lo[0]) * 0.015, (hi[1] - lo[1]) * 0.01
+    corner = dict(fontsize=11, fontweight="bold", alpha=0.75)
+    ax.text(hi[0] - dx, lo[1] + dy, "WAVE MAKERS", ha="right", va="top",
+            color=_TIER_ACCENT, **corner)
+    ax.text(lo[0] + dx, lo[1] + dy, "STEADY", ha="left", va="top",
+            color="#5b6b3a", **corner)
+    ax.text(hi[0] - dx, hi[1] - dy, "ROLLER COASTERS", ha="right", va="bottom",
+            color="#8a6236", **corner)
+    ax.text(lo[0] + dx, hi[1] - dy, "GETTING RUN OVER", ha="left", va="bottom",
+            color="#9a4a48", **corner)
+
+    # Break-even diagonal: as many runs made as allowed
+    xs = np.array([min(lo) - 5, max(hi) + 5])
+    ax.plot(xs, xs, color="#d6cfc1", lw=1, zorder=1)
+    ax.axvline(league_avg, color="#9a9488", lw=1, ls=(0, (4, 4)), zorder=1)
+    ax.axhline(league_avg, color="#9a9488", lw=1, ls=(0, (4, 4)), zorder=1)
+    ax.text(league_avg + dx * 0.6, hi[1] - dy * 6, f"LG AVG {league_avg:.2f}", ha="left",
+            va="bottom", fontsize=9, color="#7d776c", rotation=90)
+    ax.text(hi[0] - dx, league_avg - dy * 0.5, f"LG AVG {league_avg:.2f}", ha="right",
+            va="bottom", fontsize=9, color="#7d776c")
+
+    # Logos, nudged apart in inch space, with a leader line back to the true spot
+    placed = _spread_points(pts / units_per_in, logo_in * 1.08,
+                            (lo / units_per_in, hi / units_per_in)) * units_per_in
+    for abbr, (ax0, ay0), (px, py) in zip(df["abbreviation"], pts, placed):
+        if np.hypot((px - ax0) / units_per_in[0], (py - ay0) / units_per_in[1]) > logo_in * 0.15:
+            ax.plot([ax0, px], [ay0, py], color="#77716a", lw=1, zorder=2)
+            ax.scatter([ax0], [ay0], s=14, color="#77716a", zorder=2, lw=0)
+        img = logos[abbr]
+        zoom = logo_in * 72 / max(img.shape[:2])
+        ax.add_artist(AnnotationBbox(OffsetImage(img, zoom=zoom), (px, py),
+                                     frameon=False, zorder=3))
+
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_locator(mticker.MaxNLocator(8, steps=[1, 2, 5, 10]))
+        axis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}"))
+    ax.tick_params(length=0, labelsize=12, labelcolor="#6b665d", pad=8)
+    ax.grid(color="#e4ded2", lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_color("#cfc8ba")
+    ax.set_xlabel(f"{min_run}-0+ RUNS MADE PER GAME  →", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+    ax.set_ylabel(f"←  {min_run}-0+ RUNS ALLOWED PER GAME", fontsize=14, fontweight="bold",
+                  color=_TIER_INK, labelpad=14)
+
+    if note:
+        fig.text(0.065, 0.12, note, ha="left", va="center", fontsize=10.5,
+                 color="#6b665d", linespacing=1.5)
+    fig.text(0.065, 0.05, "SOURCE: NBA.COM/STATS PLAY-BY-PLAY", ha="left", va="center",
+             fontsize=12, fontweight="bold", color="#77716a")
+    if credit:
+        fig.text(0.935, 0.05, credit, ha="right", va="center", fontsize=12,
+                 fontweight="bold", color="#77716a")
+
+    if save_path:
+        fig.savefig(save_path, dpi=240, facecolor=_TIER_BG)
+    return fig, ax
+
+
 # --- Zone leaders (9:16) ------------------------------------------------------
 
 # (label, fill, headshot center, label side). The fill groups zones by shot type.

@@ -234,7 +234,6 @@ def _get_game_ids(season: str, season_type: str, refresh: bool = False) -> list[
     print(f"Fetching game list for {season} {season_type}...")
     result = _sleep_and_fetch(
         LeagueGameFinder,
-    LeagueHustleStatsPlayer,
         season_nullable=season,
         season_type_nullable=season_type,
         league_id_nullable="00",
@@ -435,6 +434,75 @@ def get_assist_pairs(
             })
 
     df = pd.DataFrame(rows).astype({"ASSISTER_ID": "Int64"})
+    save_to_cache(df, path)
+    return df
+
+
+def _game_scoring_runs(pbp: pd.DataFrame, min_run: int) -> list[tuple[int, int]]:
+    """
+    Unanswered scoring runs of at least min_run points in one game, as (teamId, points).
+
+    Walks every score change in order; a run ends the moment the other team scores.
+    Runs carry across quarter breaks, as broadcast run graphics count them.
+    """
+    sides = pbp.loc[pbp["teamId"] > 0].groupby("location")["teamId"].first()
+    if not {"h", "v"} <= set(sides.index):
+        return []
+    home, away = int(sides["h"]), int(sides["v"])
+
+    scores = pbp[["scoreHome", "scoreAway"]].replace("", np.nan).astype(float).ffill().fillna(0)
+    dh, da = scores["scoreHome"].diff().fillna(scores["scoreHome"]), scores["scoreAway"].diff().fillna(scores["scoreAway"])
+
+    runs, team, pts = [], None, 0
+    for h, a in zip(dh, da):
+        for side, gained in ((home, h), (away, a)):
+            if gained <= 0:
+                continue
+            if side == team:
+                pts += gained
+            else:
+                if team is not None and pts >= min_run:
+                    runs.append((team, int(pts)))
+                team, pts = side, gained
+    if team is not None and pts >= min_run:
+        runs.append((team, int(pts)))
+    return runs
+
+
+def get_team_scoring_runs(
+    season: str,
+    season_type: str = "Regular Season",
+    min_run: int = 10,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Per-team count of min_run-0 (or bigger) scoring runs made and allowed, from play-by-play.
+
+    Returns one row per team: TEAM_ID, abbreviation, GP, RUNS_FOR, RUNS_AGAINST.
+    """
+    key = f"scoring_runs_{min_run}_{season}_{season_type.replace(' ', '_')}"
+    path = cache_path(key)
+    cached = None if refresh else load_from_cache(path)
+    if cached is not None:
+        return cached
+
+    rows = []
+    for game_id in _get_game_ids(season, season_type, refresh=refresh):
+        pbp = _get_game_pbp(game_id)
+        teams_in_game = [int(t) for t in pbp.loc[pbp["teamId"] > 0, "teamId"].unique()]
+        if len(teams_in_game) != 2:
+            continue
+        runs = _game_scoring_runs(pbp, min_run)
+        for t in teams_in_game:
+            rows.append({"TEAM_ID": t, "GAME_ID": game_id,
+                         "RUNS_FOR": sum(1 for team, _ in runs if team == t),
+                         "RUNS_AGAINST": sum(1 for team, _ in runs if team != t)})
+
+    df = (pd.DataFrame(rows).groupby("TEAM_ID")
+          .agg(GP=("GAME_ID", "nunique"), RUNS_FOR=("RUNS_FOR", "sum"),
+               RUNS_AGAINST=("RUNS_AGAINST", "sum")).reset_index())
+    df = df.merge(pd.DataFrame(teams.get_teams())[["id", "abbreviation"]],
+                  left_on="TEAM_ID", right_on="id").drop(columns="id")
     save_to_cache(df, path)
     return df
 
