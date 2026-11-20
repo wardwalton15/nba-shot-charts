@@ -107,7 +107,8 @@ def main():
     start = int(args.season[:4]) - 1
     prev_season = f"{start}-{str(start + 1)[2:]}"
     usage_cols = ["PLAYER_ID", "PLAYER_NAME", "TEAM_ID", "TEAM_ABBREVIATION", "GP", "MIN", "USG_PCT"]
-    cur = get_player_scoring(args.season, args.season_type, refresh=refresh)[usage_cols]
+    scoring = get_player_scoring(args.season, args.season_type, refresh=refresh)
+    cur = scoring[usage_cols]
     # Last season is final, so the cache never needs refreshing
     prev = get_player_scoring(prev_season, args.season_type)[usage_cols]
     usage = cur.merge(prev.drop(columns="PLAYER_NAME"), on="PLAYER_ID", suffixes=("", "_PREV"))
@@ -159,7 +160,7 @@ def main():
 
     # Hustle data has no steals, so take them from the player scoring table
     hustle = get_hustle_stats(args.season, args.season_type, refresh=refresh)
-    hustle = hustle.merge(cur[["PLAYER_ID", "STL"]], on="PLAYER_ID", how="left")
+    hustle = hustle.merge(scoring[["PLAYER_ID", "STL"]], on="PLAYER_ID", how="left")
     hustle_path = OUT_DIR / f"hustle_{args.season}.csv"
     hustle.sort_values("DEFLECTIONS", ascending=False).to_csv(hustle_path, index=False)
     print(f"Wrote {hustle_path} ({len(hustle)} players, {hustle['STL'].isna().sum()} without steals)")

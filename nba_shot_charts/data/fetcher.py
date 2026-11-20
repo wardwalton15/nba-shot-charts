@@ -804,7 +804,6 @@ def get_two_man_lineups(
 
     df = _sleep_and_fetch(
         LeagueDashLineups,
-    LeagueDashPlayerClutch,
         season=season,
         season_type_all_star=season_type,
         group_quantity=2,
